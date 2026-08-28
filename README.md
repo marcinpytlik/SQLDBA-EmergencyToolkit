@@ -6,9 +6,9 @@ Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft S
 
 Repozytorium ma działać jak plecak awaryjny DBA: minimum teorii, maksimum skryptów gotowych do użycia.
 
-## Wersja 0.3
+## Wersja 0.4
 
-Collector PowerShell automatycznie zbiera diagnostykę SQL Server, logi Windows i podstawowy zestaw danych sieciowych do jednego katalogu incydentu. Skrypty T-SQL są projektowane jako read-only.
+Wersja 0.4 dodaje **Extended Events Emergency Pack**. Główny collector pozostaje read-only i nie uruchamia sesji XE automatycznie. Sesje Extended Events uruchamiasz świadomie tylko wtedy, gdy są potrzebne do konkretnego incydentu.
 
 ## Szybki start
 
@@ -50,19 +50,48 @@ SQLDBA-EmergencyToolkit/
 │   ├── Backups.sql
 │   ├── AgentJobs.sql
 │   ├── Replication.sql
-│   └── AG.sql
+│   ├── AG.sql
+│   └── XEventsStatus.sql
 ├── PowerShell/
 │   └── Collect-SqlIncident.ps1
 ├── Network/
 │   ├── Test-SqlConnectivity.ps1
 │   └── Wireshark-Filters.md
 ├── XEvents/
+│   ├── 01-Blocking.sql
+│   ├── 02-Deadlocks.sql
+│   ├── 03-LongRunningQueries.sql
+│   ├── 04-IOErrors-823-824-825.sql
+│   ├── 05-LoginFailures.sql
+│   ├── 06-LogGrowth.sql
+│   ├── 90-Read-XEventFiles.sql
+│   └── 99-Stop-EmergencySessions.sql
 ├── Incident/
 ├── Docs/
 │   ├── Incident-Checklist.md
-│   └── Network-Incident-Runbook.md
+│   ├── Network-Incident-Runbook.md
+│   └── XEvents-Emergency-Runbook.md
 └── README.md
 ```
+
+## Extended Events Emergency Pack
+
+Pakiet XE zawiera gotowe sesje do:
+
+- blockingu,
+- deadlocków,
+- długich zapytań,
+- błędów I/O 823/824/825,
+- błędów logowania 18456,
+- wzrostu plików baz danych, w tym logu transakcyjnego.
+
+Szczegółowa instrukcja znajduje się w `Docs/XEvents-Emergency-Runbook.md`.
+
+### Ważne
+
+Skrypty z katalogu `XEvents` **tworzą i uruchamiają sesje server-level Extended Events**. Nie są więc read-only. Główny collector ich nie uruchamia — pobiera wyłącznie stan istniejących sesji `SQLDBA_*` przez `TSQL/XEventsStatus.sql`.
+
+Przy blockingu `blocked_process_report` wymaga ustawionego `blocked process threshold (s) > 0`. Toolkit tylko sprawdza tę konfigurację; nie zmienia jej automatycznie.
 
 ## Wynik Collect-SqlIncident.ps1
 
@@ -82,7 +111,8 @@ Incident-20260828-112500/
 │   ├── Backups.csv
 │   ├── AgentJobs.csv
 │   ├── Replication.csv
-│   └── AG.csv
+│   ├── AG.csv
+│   └── XEventsStatus.csv
 ├── Network/
 │   ├── Network-Summary.csv
 │   ├── DNS.csv
@@ -135,7 +165,9 @@ Repozytorium nie przechowuje binariów narzędzi firm trzecich. Warto mieć loka
 5. Przeanalizuj waity, IO, pamięć, tempdb oraz log transakcyjny.
 6. Sprawdź backupy, SQL Server Agent, AG i replikację, jeśli są używane.
 7. Przy problemach z połączeniem sprawdź DNS, port, TCP, SPN/Kerberos, TLS i pre-login handshake oraz zbierz PCAP w Wiresharku.
-8. Zachowaj całą paczkę incydentu przed restartem lub zmianą konfiguracji.
+8. Jeżeli potrzebujesz obserwacji w czasie, uruchom tylko odpowiednią sesję XE z katalogu `XEvents`.
+9. Zatrzymaj sesję XE po reprodukcji problemu i zachowaj `.xel` razem z paczką incydentu.
+10. Zachowaj całą paczkę incydentu przed restartem lub zmianą konfiguracji.
 
 ## Uprawnienia
 
@@ -143,9 +175,11 @@ Część DMV wymaga `VIEW SERVER STATE` lub odpowiednich uprawnień w nowszych w
 
 Polecenia `setspn` i `klist` służą tu do diagnostyki. Skrypt nie dodaje ani nie usuwa SPN.
 
+Tworzenie i zarządzanie serwerowymi sesjami Extended Events wymaga odpowiednich uprawnień serwerowych.
+
 ## Bezpieczeństwo
 
-Skrypty diagnostyczne w katalogu `TSQL` są przeznaczone do odczytu. Skrypty wykonujące zmiany będą wyraźnie oznaczone i oddzielone od collectorów diagnostycznych.
+Skrypty diagnostyczne w katalogu `TSQL` są przeznaczone do odczytu. Skrypty w katalogu `XEvents` wykonują zmiany polegające na utworzeniu, uruchomieniu lub zatrzymaniu sesji Extended Events i są celowo oddzielone od collectorów read-only.
 
 ## Autor
 
