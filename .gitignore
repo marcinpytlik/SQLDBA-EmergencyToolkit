@@ -1,0 +1,22 @@
+# Incident output
+Incidents/
+Incident-*/
+
+# Packet captures / traces
+*.pcap
+*.pcapng
+*.etl
+*.xel
+*.trc
+
+# Logs and exports
+*.log
+*.csv
+
+# PowerShell transient files
+*.clixml
+
+# OS/editor
+Thumbs.db
+.DS_Store
+.vscode/
