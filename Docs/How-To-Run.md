@@ -52,8 +52,6 @@ Jeżeli instancja używa domyślnego portu i nazwy hosta wystarcza:
 
 ## 3. Query Store dla konkretnej bazy
 
-Parametr `-Database` wskazuje bazę używaną m.in. przez collector Query Store:
-
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
     -ServerInstance "SQLPROD01,1433" `
@@ -62,31 +60,17 @@ Parametr `-Database` wskazuje bazę używaną m.in. przez collector Query Store:
 
 ## 4. Zdalny host Windows
 
-Jeżeli PowerShell uruchamiasz na stacji DBA, a dane OS mają pochodzić z serwera SQL, podaj `-ComputerName`:
-
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
     -ServerInstance "SQLPROD01,1433" `
     -ComputerName "SQLPROD01"
 ```
 
-W tym przypadku:
-
-- diagnostyka SQL trafia do `SQLPROD01,1433`,
-- diagnostyka OS/Event Log/storage jest pobierana z hosta `SQLPROD01`,
-- diagnostyka Network pokazuje połączenie z hosta collectora do endpointu SQL.
-
-Przed użyciem możesz sprawdzić dostęp zdalny:
-
-```powershell
-Test-WSMan SQLPROD01
-Get-CimInstance Win32_OperatingSystem -ComputerName SQLPROD01
-Get-WinEvent -ComputerName SQLPROD01 -LogName System -MaxEvents 5
-```
+W tym przypadku diagnostyka SQL trafia do endpointu SQL, a dane OS/Event Log/storage są pobierane z podanego hosta Windows.
 
 ## 5. SQL Server FCI
 
-### Gdy znasz aktywny node
+Gdy znasz aktywny node:
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
@@ -95,7 +79,7 @@ Get-WinEvent -ComputerName SQLPROD01 -LogName System -MaxEvents 5
     -CollectCluster
 ```
 
-### Automatyczne wykrycie aktywnego noda
+Automatyczne wykrycie aktywnego noda:
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
@@ -104,26 +88,7 @@ Get-WinEvent -ComputerName SQLPROD01 -LogName System -MaxEvents 5
     -CollectCluster
 ```
 
-Toolkit użyje nazwy `SQLFCI` do odnalezienia Network Name FCI i spróbuje ustalić owner node grupy SQL.
-
-Sam resolver można uruchomić osobno:
-
-```powershell
-.\Cluster\Resolve-FciActiveNode.ps1 `
-    -SqlNetworkName "SQLFCI"
-```
-
-Pełny snapshot klastra:
-
-```powershell
-.\Cluster\Get-ClusterSnapshot.ps1 `
-    -ClusterName "CLUSTER01" `
-    -OutputPath ".\ClusterSnapshot"
-```
-
 ## 6. Availability Group
-
-Dla listenera AG wskaż listener jako `ServerInstance`, a jako `ComputerName` konkretną replikę, której system operacyjny chcesz analizować:
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
@@ -133,28 +98,16 @@ Dla listenera AG wskaż listener jako `ServerInstance`, a jako `ComputerName` ko
 
 ## 7. Diagnostyka sieci
 
-Samodzielny test połączenia:
-
 ```powershell
 .\Network\Test-SqlConnectivity.ps1 `
     -ServerInstance "SQLPROD01,1530"
 ```
 
-Wyniki obejmują m.in. DNS, ping/TCP, routing, netstat, Kerberos/SPN oraz podstawowe dane potrzebne przy `pre-login handshake timeout`.
-
-Filtry do Wiresharka znajdują się w:
+Filtry do Wiresharka:
 
 ```text
 Network/Wireshark-Filters.md
 ```
-
-Typowy workflow:
-
-```text
-DNS -> TCP -> TLS/pre-login -> login -> SQL request
-```
-
-Pamiętaj: poprawny `Test-NetConnection` nie potwierdza jeszcze poprawnego TLS/pre-login handshake.
 
 ## 8. Diagnostyka Windows i OS
 
@@ -173,7 +126,7 @@ Top procesów:
     -OutputPath ".\OSSnapshot"
 ```
 
-Zdalny snapshot Windows:
+Zdalny snapshot:
 
 ```powershell
 .\OS\Get-RemoteOSSnapshot.ps1 `
@@ -183,15 +136,13 @@ Zdalny snapshot Windows:
 
 ## 9. Diagnostyka storage
 
-Samodzielny snapshot Windows storage:
-
 ```powershell
 .\OS\Get-StorageSnapshot.ps1 `
     -ComputerName "SQLNODE02" `
     -OutputPath ".\StorageSnapshot"
 ```
 
-Najważniejsze collectory SQL dla storage możesz też uruchamiać bezpośrednio w SSMS:
+Najważniejsze skrypty T-SQL:
 
 ```text
 TSQL/StorageIO.sql
@@ -200,94 +151,47 @@ TSQL/VLF.sql
 TSQL/TempdbIO.sql
 ```
 
-Praktyczny workflow:
-
-```text
-Wait Stats -> StorageIO.sql -> physical_name -> wolumen -> Windows disk counters
-```
-
-Dla problemów z logiem zwracaj uwagę na `WRITELOG`, growth logu i liczbę VLF. Dla problemów z odczytem koreluj wyniki z `PAGEIOLATCH_*`.
-
 ## 10. Skrypty T-SQL
-
-Każdy plik z katalogu `TSQL` można uruchomić ręcznie w SSMS/Azure Data Studio przeciwko właściwej instancji.
 
 Najczęściej używane:
 
 ```text
-ActiveRequests.sql   - aktywne requesty
-Blocking.sql         - blocking
-WaitStats.sql        - waity
-IOStats.sql          - IO baz i plików
-Memory.sql           - pamięć
-TempDB.sql           - tempdb
-Log.sql              - log transakcyjny
-Backups.sql          - historia backupów
-AgentJobs.sql        - SQL Agent
-Replication.sql      - replikacja
-AG.sql               - Availability Groups
-StorageIO.sql        - latency plików
-FileGrowth.sql       - growth/maxsize
-VLF.sql              - liczba VLF
-TempdbIO.sql         - IO tempdb
-XEventsStatus.sql    - status sesji SQLDBA_*
+ActiveRequests.sql
+Blocking.sql
+WaitStats.sql
+IOStats.sql
+Memory.sql
+TempDB.sql
+Log.sql
+Backups.sql
+AgentJobs.sql
+Replication.sql
+AG.sql
+StorageIO.sql
+FileGrowth.sql
+VLF.sql
+TempdbIO.sql
+XEventsStatus.sql
 ```
-
-Większość tych skryptów wymaga praw typu `VIEW SERVER STATE` lub odpowiednich nowszych uprawnień w SQL Server 2022+.
 
 ## 11. Extended Events Emergency Pack
 
-Skrypty w katalogu `XEvents` **zmieniają stan instancji**, ponieważ tworzą/uruchamiają/zatrzymują sesje XE. Główny collector nie uruchamia ich automatycznie.
+Skrypty w katalogu `XEvents` zmieniają stan instancji, ponieważ tworzą/uruchamiają/zatrzymują sesje XE. Główny collector nie uruchamia ich automatycznie.
 
-Przykład - deadlocki:
-
-1. Otwórz w SSMS:
+Przykład:
 
 ```text
 XEvents/02-Deadlocks.sql
-```
-
-2. Wykonaj skrypt świadomie.
-3. Odtwórz problem.
-4. Zatrzymaj sesje:
-
-```text
 XEvents/99-Stop-EmergencySessions.sql
-```
-
-5. Odczytaj pliki `.xel` zgodnie z:
-
-```text
 XEvents/90-Read-XEventFiles.sql
-```
-
-Dostępne scenariusze:
-
-```text
-01-Blocking.sql
-02-Deadlocks.sql
-03-LongRunningQueries.sql
-04-IOErrors-823-824-825.sql
-05-LoginFailures.sql
-06-LogGrowth.sql
 ```
 
 ## 12. Raporty po incydencie
 
-Po pełnym collectorze raporty powstają automatycznie.
-
-Dla istniejącej paczki możesz wygenerować je ponownie.
-
-Najpierw summary:
-
 ```powershell
 .\Reports\New-IncidentSummary.ps1 `
     -IncidentPath ".\Incidents\Incident-20260828-120000"
-```
 
-Następnie HTML:
-
-```powershell
 .\Reports\New-IncidentHtmlReport.ps1 `
     -IncidentPath ".\Incidents\Incident-20260828-120000"
 ```
@@ -301,8 +205,6 @@ Incident-HealthScore.csv
 Incident-Report.html
 ```
 
-Raport HTML można otworzyć bezpośrednio w przeglądarce.
-
 ## 13. Gdzie zapisywane są dane
 
 Domyślnie:
@@ -311,40 +213,23 @@ Domyślnie:
 .\Incidents\Incident-YYYYMMDD-HHMMSS\
 ```
 
-Możesz zmienić katalog główny:
-
-```powershell
-.\PowerShell\Collect-SqlIncident.ps1 `
-    -ServerInstance "SQLPROD01,1433" `
-    -OutputRoot "D:\DBA\Incidents"
-```
+Możesz zmienić katalog główny przez `-OutputRoot`.
 
 ## 14. Najlepszy workflow podczas incydentu
 
 1. Zapisz dokładny czas i objawy.
-2. Uruchom główny `Collect-SqlIncident.ps1`.
+2. Uruchom `Collect-SqlIncident.ps1`.
 3. Nie restartuj SQL Server przed zebraniem diagnostyki, jeśli sytuacja na to pozwala.
 4. Sprawdź `Incident-Summary.md` oraz `Incident-Report.html`.
-5. Przejrzyj `*-error.txt` - pokazują brakujące elementy collectora.
+5. Przejrzyj `*-error.txt`.
 6. Jeżeli problem trwa nadal, włącz tylko odpowiednią sesję XE.
-7. Przy problemach sieciowych zbierz dodatkowo PCAP w Wiresharku.
-8. Przy problemach poniżej SQL Server rozważ ręcznie WPR/WPA lub ProcDump zgodnie z runbookami.
-9. Po incydencie zachowaj całą paczkę do RCA.
+7. Przy problemach sieciowych zbierz PCAP w Wiresharku.
+8. Przy problemach poniżej SQL Server użyj odpowiedniego runbooka Procmon/WPR/ProcDump.
+9. Zachowaj całą paczkę do RCA.
 
 ## 15. Ważne zasady bezpieczeństwa
 
-Collectory SQL/Network/OS/Storage/Cluster i generatory raportów są przeznaczone do odczytu.
-
-Nie wykonują automatycznie:
-
-- restartów usług,
-- failoveru,
-- shrink,
-- zmian autogrowth,
-- zmian konfiguracji storage,
-- zmian firewalla/WinRM,
-- ProcDump,
-- WPR.
+Collectory SQL/Network/OS/Storage/Cluster i generatory raportów są przeznaczone do odczytu. Nie wykonują automatycznie restartów, failoveru, shrink, zmian autogrowth, zmian firewalla/WinRM, ProcDump ani WPR.
 
 Wyjątkiem są skrypty `XEvents`, które świadomie tworzą i zarządzają sesjami Extended Events.
 
@@ -356,22 +241,10 @@ Standardowa instancja:
 .\PowerShell\Collect-SqlIncident.ps1 -ServerInstance "SQL01,1433"
 ```
 
-Zdalny OS:
-
-```powershell
-.\PowerShell\Collect-SqlIncident.ps1 -ServerInstance "SQL01,1433" -ComputerName "SQL01"
-```
-
 FCI:
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 -ServerInstance "SQLFCI,1530" -ResolveFciActiveNode -CollectCluster
-```
-
-AG:
-
-```powershell
-.\PowerShell\Collect-SqlIncident.ps1 -ServerInstance "AGLISTENER,1433" -ComputerName "SQLAG01"
 ```
 
 Sieć:
@@ -380,69 +253,95 @@ Sieć:
 .\Network\Test-SqlConnectivity.ps1 -ServerInstance "SQL01,1433"
 ```
 
-Raport dla istniejącej paczki:
+## 17. Procmon i symbole offline dla SQL Server I/O
 
-```powershell
-.\Reports\New-IncidentSummary.ps1 -IncidentPath ".\Incidents\Incident-YYYYMMDD-HHMMSS"
-.\Reports\New-IncidentHtmlReport.ps1 -IncidentPath ".\Incidents\Incident-YYYYMMDD-HHMMSS"
-```
-
-## 17. Procmon i symbole offline dla analizy SQL Server I/O
-
-Pełny runbook znajduje się w:
+Pełne dokumenty:
 
 ```text
 Docs/Procmon-SQL-IO-Runbook.md
+Docs/Offline-Symbols-Workflow.md
 ```
 
-Skrypt do przygotowania symboli offline:
+Przyjmujemy standardową strukturę na stacji DBA:
 
 ```text
-PowerShell/Prepare-OfflineSymbols.ps1
+C:\SQLSymbols\
+├── Targets\
+│   ├── SQLPROD01\
+│   ├── SQLPROD02\
+│   └── ...
+├── Symbols\
+├── Logs\
+└── Tools\
 ```
 
-### Serwer SQL bez Internetu
+### Krok 1 - produkcja
 
-Najpierw znajdź katalog BINN:
+Na serwerze SQL uruchom:
 
 ```powershell
-Get-Process sqlservr | Select-Object -ExpandProperty Path
+.\PowerShell\Copy-SqlSymbolTargetsToWorkstation.ps1 `
+    -DestinationPath "\\DBAWORKSTATION\SQLSymbols$\Targets" `
+    -IncludeOptionalDrivers
 ```
 
-Następnie zbierz dokładne wersje binariów Windows, sterowników i SQL Server:
+Skrypt automatycznie utworzy:
 
-```powershell
-.\PowerShell\Prepare-OfflineSymbols.ps1 `
-    -Mode CollectTargets `
-    -WorkingDirectory C:\SQLSymbols `
-    -SqlBinnPath "C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn"
+```text
+C:\SQLSymbols\Targets\<COMPUTERNAME>
 ```
 
-### Komputer z Internetem
+oraz zbierze Windows DLL, kernel/storage drivers i binaria wszystkich wykrytych procesów `sqlservr.exe`.
 
-Po skopiowaniu katalogu `C:\SQLSymbols` na komputer z dostępem do Internetu uruchom:
+### Krok 2 - stacja DBA z Internetem
+
+Uruchom:
 
 ```powershell
 .\PowerShell\Prepare-OfflineSymbols.ps1 `
     -Mode DownloadSymbols `
-    -WorkingDirectory C:\SQLSymbols
+    -WorkingDirectory "C:\SQLSymbols"
 ```
 
-Wymagany jest `symchk.exe` z Debugging Tools for Windows.
+Skrypt rekurencyjnie przejrzy wszystkie serwery w:
 
-Powstały cache:
+```text
+C:\SQLSymbols\Targets
+```
+
+i pobierze symbole do:
 
 ```text
 C:\SQLSymbols\Symbols
 ```
 
-skopiuj z powrotem na serwer SQL i wskaż w Procmon:
+Logi trafią do:
+
+```text
+C:\SQLSymbols\Logs
+```
+
+### Krok 3 - powrót na serwer offline
+
+Na produkcję kopiujesz przede wszystkim:
+
+```text
+C:\SQLSymbols\Symbols
+```
+
+np. do:
+
+```text
+D:\DBATools\Symbols
+```
+
+W Procmon:
 
 ```text
 Options -> Configure Symbols...
 ```
 
-np.:
+Symbol path:
 
 ```text
 D:\DBATools\Symbols
@@ -456,14 +355,10 @@ AND
 Path begins with D:\SQLData\
 ```
 
-Do bardzo krótkiego testu najlepiej użyć konkretnego pliku:
+Następnie:
 
 ```text
-Process Name is sqlservr.exe
-AND
-Path is D:\SQLData\ProblemDatabase.mdf
+WriteFile -> Event Properties -> Stack
 ```
 
-Następnie kliknij zdarzenie `WriteFile`, otwórz `Event Properties` i przejdź do zakładki `Stack`.
-
-Szczegóły testów INSERT / COMMIT / CHECKPOINT / MDF / LDF oraz interpretacja stacku są opisane w `Docs/Procmon-SQL-IO-Runbook.md`.
+Szczegóły testów `INSERT`, `COMMIT`, `CHECKPOINT`, MDF/LDF i interpretacji stacku są opisane w `Docs/Procmon-SQL-IO-Runbook.md`.
