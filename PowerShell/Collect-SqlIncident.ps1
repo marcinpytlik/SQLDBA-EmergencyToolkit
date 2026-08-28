@@ -32,6 +32,7 @@ $meta = [pscustomobject]@{
     Database       = $Database
     ToolkitRoot    = $ToolkitRoot
     PowerShell     = $PSVersionTable.PSVersion.ToString()
+    ToolkitVersion = "0.4"
 }
 $meta | Export-Csv (Join-Path $incidentDir "incident-metadata.csv") -NoTypeInformation -Encoding UTF8
 
@@ -89,6 +90,7 @@ $scriptMap = @(
     @{ Name = "AgentJobs";      File = "AgentJobs.sql";      Database = "msdb" },
     @{ Name = "Replication";    File = "Replication.sql";    Database = "master" },
     @{ Name = "AG";             File = "AG.sql";             Database = "master" },
+    @{ Name = "XEventsStatus";  File = "XEventsStatus.sql";  Database = "master" },
     @{ Name = "QueryStore";     File = "QueryStore.sql";     Database = $Database }
 )
 
@@ -139,9 +141,12 @@ Symptoms:
 Affected applications:
 Recent changes:
 Actions already taken:
+Extended Events session started:
+Extended Events start time:
 Additional observations:
 "@ | Out-File (Join-Path $notesDir "incident-notes.txt") -Encoding utf8
 
 Write-Host ""
 Write-Host "Incident package created: $incidentDir"
 Write-Host "Review *-error.txt files to see which collectors could not run."
+Write-Host "XE sessions are NOT started automatically. Use the scripts in XEvents only when needed."
