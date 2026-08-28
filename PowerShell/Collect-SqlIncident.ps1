@@ -27,11 +27,12 @@ $incidentDir = Join-Path $OutputRoot "Incident-$timestamp"
 $sqlDir = Join-Path $incidentDir "SQL"
 $networkDir = Join-Path $incidentDir "Network"
 $osDir = Join-Path $incidentDir "OS"
+$storageDir = Join-Path $incidentDir "Storage"
 $clusterDir = Join-Path $incidentDir "Cluster"
 $eventDir = Join-Path $incidentDir "EventLogs"
 $notesDir = Join-Path $incidentDir "Notes"
 
-@($incidentDir, $sqlDir, $networkDir, $osDir, $clusterDir, $eventDir, $notesDir) | ForEach-Object {
+@($incidentDir, $sqlDir, $networkDir, $osDir, $storageDir, $clusterDir, $eventDir, $notesDir) | ForEach-Object {
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
 }
 
@@ -70,7 +71,7 @@ $meta = [pscustomobject]@{
     Database             = $Database
     ToolkitRoot          = $ToolkitRoot
     PowerShell           = $PSVersionTable.PSVersion.ToString()
-    ToolkitVersion       = "0.7"
+    ToolkitVersion       = "0.8"
 }
 $meta | Export-Csv (Join-Path $incidentDir "incident-metadata.csv") -NoTypeInformation -Encoding UTF8
 
@@ -121,6 +122,10 @@ $scriptMap = @(
     @{ Name = "Blocking";       File = "Blocking.sql";       Database = "master" },
     @{ Name = "WaitStats";      File = "WaitStats.sql";      Database = "master" },
     @{ Name = "IOStats";        File = "IOStats.sql";        Database = "master" },
+    @{ Name = "StorageIO";      File = "StorageIO.sql";      Database = "master" },
+    @{ Name = "FileGrowth";     File = "FileGrowth.sql";     Database = "master" },
+    @{ Name = "VLF";            File = "VLF.sql";            Database = "master" },
+    @{ Name = "TempdbIO";       File = "TempdbIO.sql";       Database = "tempdb" },
     @{ Name = "Memory";         File = "Memory.sql";         Database = "master" },
     @{ Name = "TempDB";         File = "TempDB.sql";         Database = "tempdb" },
     @{ Name = "Log";            File = "Log.sql";            Database = "master" },
@@ -149,9 +154,6 @@ if (Test-Path $networkScript) {
         $_ | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
     }
 }
-else {
-    "Network collector not found: $networkScript" | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
-}
 
 if ($CollectCluster) {
     $clusterSnapshotScript = Join-Path $ToolkitRoot "Cluster\Get-ClusterSnapshot.ps1"
@@ -164,9 +166,6 @@ if ($CollectCluster) {
         catch {
             $_ | Out-File (Join-Path $clusterDir "Cluster-Collector-error.txt") -Encoding utf8
         }
-    }
-    else {
-        "Cluster collector not found: $clusterSnapshotScript" | Out-File (Join-Path $clusterDir "Cluster-Collector-error.txt") -Encoding utf8
     }
 }
 
@@ -181,9 +180,6 @@ if ($osMode -eq 'Remote') {
         catch {
             $_ | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
         }
-    }
-    else {
-        "Remote OS collector not found: $remoteOSScript" | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
     }
 }
 else {
@@ -201,12 +197,20 @@ else {
 
     $topProcessesScript = Join-Path $ToolkitRoot "OS\Get-TopProcesses.ps1"
     if (Test-Path $topProcessesScript) {
-        try {
-            & $topProcessesScript -OutputPath $osDir
-        }
-        catch {
-            $_ | Out-File (Join-Path $osDir "TopProcesses-error.txt") -Encoding utf8
-        }
+        try { & $topProcessesScript -OutputPath $osDir }
+        catch { $_ | Out-File (Join-Path $osDir "TopProcesses-error.txt") -Encoding utf8 }
+    }
+}
+
+$storageScript = Join-Path $ToolkitRoot "OS\Get-StorageSnapshot.ps1"
+if (Test-Path $storageScript) {
+    try {
+        Write-Host "Collecting Windows storage diagnostics from $osTarget..."
+        & $storageScript -ComputerName $osTarget -OutputPath $storageDir | Out-String |
+            Out-File (Join-Path $storageDir "Storage-Console.txt") -Encoding utf8
+    }
+    catch {
+        $_ | Out-File (Join-Path $storageDir "Storage-Collector-error.txt") -Encoding utf8
     }
 }
 
@@ -222,9 +226,7 @@ try {
             Export-Csv (Join-Path $eventDir "System.csv") -NoTypeInformation -Encoding UTF8
     }
 }
-catch {
-    $_ | Out-File (Join-Path $eventDir "System-error.txt") -Encoding utf8
-}
+catch { $_ | Out-File (Join-Path $eventDir "System-error.txt") -Encoding utf8 }
 
 try {
     if ($osMode -eq 'Remote') {
@@ -238,9 +240,7 @@ try {
             Export-Csv (Join-Path $eventDir "Application.csv") -NoTypeInformation -Encoding UTF8
     }
 }
-catch {
-    $_ | Out-File (Join-Path $eventDir "Application-error.txt") -Encoding utf8
-}
+catch { $_ | Out-File (Join-Path $eventDir "Application-error.txt") -Encoding utf8 }
 
 @"
 Incident notes
@@ -255,6 +255,7 @@ Windows target: $osTarget
 OS collection mode: $osMode
 FCI active-node resolution: $ResolveFciActiveNode
 Cluster collection: $CollectCluster
+Storage symptoms / affected volume:
 Extended Events session started:
 Extended Events start time:
 ProcDump/WPR started:
@@ -266,6 +267,7 @@ Write-Host ""
 Write-Host "Incident package created: $incidentDir"
 Write-Host "SQL target: $ServerInstance"
 Write-Host "Windows target: $osTarget ($osMode)"
+Write-Host "Storage diagnostics: $storageDir"
 if ($ResolveFciActiveNode) { Write-Host "FCI active-node resolution requested." }
 if ($CollectCluster) { Write-Host "Cluster snapshot requested." }
 Write-Host "Review *-error.txt files to see which collectors could not run."
