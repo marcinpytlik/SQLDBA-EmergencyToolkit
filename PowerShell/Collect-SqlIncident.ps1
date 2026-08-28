@@ -6,6 +6,12 @@ param(
     [string]$ComputerName,
 
     [Parameter(Mandatory = $false)]
+    [switch]$ResolveFciActiveNode,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$CollectCluster,
+
+    [Parameter(Mandatory = $false)]
     [string]$Database = "master",
 
     [Parameter(Mandatory = $false)]
@@ -21,27 +27,50 @@ $incidentDir = Join-Path $OutputRoot "Incident-$timestamp"
 $sqlDir = Join-Path $incidentDir "SQL"
 $networkDir = Join-Path $incidentDir "Network"
 $osDir = Join-Path $incidentDir "OS"
+$clusterDir = Join-Path $incidentDir "Cluster"
 $eventDir = Join-Path $incidentDir "EventLogs"
 $notesDir = Join-Path $incidentDir "Notes"
 
-@($incidentDir, $sqlDir, $networkDir, $osDir, $eventDir, $notesDir) | ForEach-Object {
+@($incidentDir, $sqlDir, $networkDir, $osDir, $clusterDir, $eventDir, $notesDir) | ForEach-Object {
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
+}
+
+$fciResolution = $null
+if ($ResolveFciActiveNode) {
+    try {
+        $sqlNetworkName = ($ServerInstance -split ',')[0]
+        $resolver = Join-Path $ToolkitRoot "Cluster\Resolve-FciActiveNode.ps1"
+        if (-not (Test-Path $resolver)) { throw "FCI resolver not found: $resolver" }
+        $fciResolution = & $resolver -SqlNetworkName $sqlNetworkName
+        if ($fciResolution.ActiveNode) {
+            $ComputerName = [string]$fciResolution.ActiveNode
+            $fciResolution | Export-Csv (Join-Path $clusterDir "FciResolution.csv") -NoTypeInformation -Encoding UTF8
+        }
+        else {
+            throw "Resolver did not return ActiveNode."
+        }
+    }
+    catch {
+        $_ | Out-File (Join-Path $clusterDir "FciResolution-error.txt") -Encoding utf8
+    }
 }
 
 $osTarget = if ([string]::IsNullOrWhiteSpace($ComputerName)) { $env:COMPUTERNAME } else { $ComputerName }
 $osMode = if ([string]::IsNullOrWhiteSpace($ComputerName)) { "Local" } else { "Remote" }
 
 $meta = [pscustomobject]@{
-    CollectedAt    = Get-Date
-    CollectorHost  = $env:COMPUTERNAME
-    CollectorUser  = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    ServerInstance = $ServerInstance
-    ComputerName   = $osTarget
-    OSCollection   = $osMode
-    Database       = $Database
-    ToolkitRoot    = $ToolkitRoot
-    PowerShell     = $PSVersionTable.PSVersion.ToString()
-    ToolkitVersion = "0.6"
+    CollectedAt          = Get-Date
+    CollectorHost        = $env:COMPUTERNAME
+    CollectorUser        = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    ServerInstance       = $ServerInstance
+    ComputerName         = $osTarget
+    OSCollection         = $osMode
+    ResolveFciActiveNode = [bool]$ResolveFciActiveNode
+    CollectCluster       = [bool]$CollectCluster
+    Database             = $Database
+    ToolkitRoot          = $ToolkitRoot
+    PowerShell           = $PSVersionTable.PSVersion.ToString()
+    ToolkitVersion       = "0.7"
 }
 $meta | Export-Csv (Join-Path $incidentDir "incident-metadata.csv") -NoTypeInformation -Encoding UTF8
 
@@ -122,6 +151,23 @@ if (Test-Path $networkScript) {
 }
 else {
     "Network collector not found: $networkScript" | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
+}
+
+if ($CollectCluster) {
+    $clusterSnapshotScript = Join-Path $ToolkitRoot "Cluster\Get-ClusterSnapshot.ps1"
+    if (Test-Path $clusterSnapshotScript) {
+        try {
+            Write-Host "Collecting cluster diagnostics..."
+            & $clusterSnapshotScript -OutputPath $clusterDir | Out-String |
+                Out-File (Join-Path $clusterDir "Cluster-Console.txt") -Encoding utf8
+        }
+        catch {
+            $_ | Out-File (Join-Path $clusterDir "Cluster-Collector-error.txt") -Encoding utf8
+        }
+    }
+    else {
+        "Cluster collector not found: $clusterSnapshotScript" | Out-File (Join-Path $clusterDir "Cluster-Collector-error.txt") -Encoding utf8
+    }
 }
 
 if ($osMode -eq 'Remote') {
@@ -207,6 +253,8 @@ Actions already taken:
 SQL target: $ServerInstance
 Windows target: $osTarget
 OS collection mode: $osMode
+FCI active-node resolution: $ResolveFciActiveNode
+Cluster collection: $CollectCluster
 Extended Events session started:
 Extended Events start time:
 ProcDump/WPR started:
@@ -218,5 +266,7 @@ Write-Host ""
 Write-Host "Incident package created: $incidentDir"
 Write-Host "SQL target: $ServerInstance"
 Write-Host "Windows target: $osTarget ($osMode)"
+if ($ResolveFciActiveNode) { Write-Host "FCI active-node resolution requested." }
+if ($CollectCluster) { Write-Host "Cluster snapshot requested." }
 Write-Host "Review *-error.txt files to see which collectors could not run."
-Write-Host "XE sessions, ProcDump and WPR are NOT started automatically."
+Write-Host "XE sessions, ProcDump, WPR and cluster failover actions are NOT started automatically."
