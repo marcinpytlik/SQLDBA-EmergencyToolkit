@@ -6,21 +6,21 @@ Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft S
 
 Repozytorium ma działać jak plecak awaryjny DBA: minimum teorii, maksimum skryptów gotowych do użycia.
 
-## Wersja 0.7
+## Wersja 0.8
 
-Wersja 0.7 dodaje **FCI & Cluster Emergency Pack**.
+Wersja 0.8 dodaje **Storage & IO Emergency Pack**.
 
-Toolkit potrafi teraz:
+Toolkit potrafi teraz korelować:
 
-- zebrać snapshot Windows Server Failover Cluster,
-- pokazać stany nodów, grup i zasobów,
-- zebrać Network Name oraz adresy IP klastra,
-- pokazać quorum,
-- wykryć zasoby SQL Server / SQL Server Agent,
-- zmapować grupę SQL FCI do aktywnego noda,
-- opcjonalnie samodzielnie ustalić aktywny node FCI i użyć go jako `ComputerName` dla diagnostyki OS.
+- latency per plik SQL Server,
+- ustawienia autogrowth,
+- liczbę VLF,
+- IO tempdb,
+- wolne miejsce na wolumenach,
+- liczniki dysków logicznych i fizycznych Windows,
+- aktywny node FCI z właściwym hostem storage.
 
-Żaden skrypt v0.7 nie wykonuje failoveru ani zmian w konfiguracji klastra.
+Wszystkie collectory storage są diagnostyczne/read-only.
 
 ## Szybki start
 
@@ -39,15 +39,6 @@ Toolkit potrafi teraz:
     -ComputerName "SQLPROD01"
 ```
 
-### FCI — znany aktywny node
-
-```powershell
-.\PowerShell\Collect-SqlIncident.ps1 `
-    -ServerInstance "SQLFCI,1530" `
-    -ComputerName "SQLNODE02" `
-    -CollectCluster
-```
-
 ### FCI — automatyczne wykrycie aktywnego noda
 
 ```powershell
@@ -57,7 +48,7 @@ Toolkit potrafi teraz:
     -CollectCluster
 ```
 
-Dla `SQLFCI,1530` toolkit użyje nazwy `SQLFCI` jako Network Name/DNS Name FCI, spróbuje ustalić owner node grupy SQL i wykorzysta ten node do zdalnego collectora OS i Event Log.
+W tym trybie diagnostyka SQL idzie do VNN, a dane OS/storage są zbierane z aktywnego fizycznego noda.
 
 ### Availability Group
 
@@ -67,99 +58,108 @@ Dla `SQLFCI,1530` toolkit użyje nazwy `SQLFCI` jako Network Name/DNS Name FCI, 
     -ComputerName "SQLAG02"
 ```
 
-### Query Store konkretnej bazy
-
-```powershell
-.\PowerShell\Collect-SqlIncident.ps1 `
-    -ServerInstance "SQLPROD01,1433" `
-    -ComputerName "SQLPROD01" `
-    -Database "MyDatabase"
-```
-
-Collector wykorzystuje `Invoke-Sqlcmd`, a jeżeli nie jest dostępny, próbuje `Invoke-DbaQuery` z modułu dbatools.
-
-## Struktura
+## Nowe pliki v0.8
 
 ```text
-SQLDBA-EmergencyToolkit/
-├── TSQL/
-├── PowerShell/
-│   └── Collect-SqlIncident.ps1
-├── Network/
-│   ├── Test-SqlConnectivity.ps1
-│   └── Wireshark-Filters.md
-├── OS/
-│   ├── Get-OSSnapshot.ps1
-│   ├── Get-RemoteOSSnapshot.ps1
-│   ├── Get-TopProcesses.ps1
-│   ├── ProcDump-Runbook.md
-│   └── WPR-Runbook.md
-├── Cluster/
-│   ├── Get-ClusterSnapshot.ps1
-│   └── Resolve-FciActiveNode.ps1
-├── XEvents/
-├── Docs/
-│   ├── Incident-Checklist.md
-│   ├── Network-Incident-Runbook.md
-│   ├── Windows-OS-Emergency-Runbook.md
-│   ├── XEvents-Emergency-Runbook.md
-│   ├── Remote-Collector-Runbook.md
-│   └── Cluster-FCI-Emergency-Runbook.md
-└── README.md
+TSQL/
+├── StorageIO.sql
+├── FileGrowth.sql
+├── VLF.sql
+└── TempdbIO.sql
+
+OS/
+└── Get-StorageSnapshot.ps1
+
+Docs/
+└── Storage-IO-Emergency-Runbook.md
 ```
+
+## Storage & IO Emergency Pack
+
+### SQL Server
+
+`TSQL/StorageIO.sql` korzysta z `sys.dm_io_virtual_file_stats` i pokazuje m.in.:
+
+- bazę,
+- typ pliku,
+- ścieżkę fizyczną,
+- liczbę odczytów i zapisów,
+- bytes read/write,
+- `AvgReadLatencyMs`,
+- `AvgWriteLatencyMs`.
+
+`TSQL/FileGrowth.sql` pokazuje rozmiary, MAXSIZE i konfigurację autogrowth.
+
+`TSQL/VLF.sql` zbiera liczbę VLF dla baz użytkownika.
+
+`TSQL/TempdbIO.sql` pokazuje latency osobno dla każdego pliku tempdb.
+
+### Windows / storage
+
+`OS/Get-StorageSnapshot.ps1` zbiera:
+
+- `Volumes.csv`,
+- `VolumeDetails.csv`,
+- `PhysicalDisks.csv`,
+- `LogicalDiskPerf.csv`,
+- `PhysicalDiskPerf.csv`.
+
+Dzięki temu można porównać latency widziane przez SQL Server z aktualnym stanem warstwy Windows.
+
+## Wynik collectora
+
+W paczce incydentu pojawia się teraz dodatkowy katalog:
+
+```text
+Storage/
+├── Volumes.csv
+├── VolumeDetails.csv
+├── PhysicalDisks.csv
+├── LogicalDiskPerf.csv
+├── PhysicalDiskPerf.csv
+└── Storage-Console.txt
+```
+
+Po stronie SQL dochodzą:
+
+```text
+SQL/
+├── StorageIO.csv
+├── FileGrowth.csv
+├── VLF.csv
+└── TempdbIO.csv
+```
+
+## Jak analizować IO
+
+Najpierw sprawdź `SQL/StorageIO.csv` i ustal, które pliki mają najwyższe read/write latency. Następnie z `physical_name` ustal wolumen i porównaj go z `Storage/LogicalDiskPerf.csv` oraz `Storage/PhysicalDiskPerf.csv`.
+
+Dla problemów z odczytem koreluj wyniki z waitami `PAGEIOLATCH_*`. Dla logu sprawdzaj szczególnie `WRITELOG`, growth logu i konfigurację VLF.
+
+Wartości z `sys.dm_io_virtual_file_stats` są kumulowane, więc mogą obejmować długi okres od startu instancji. Snapshot Windows pokazuje bieżący stan i dlatego oba źródła należy interpretować razem.
+
+Szczegółowy runbook: `Docs/Storage-IO-Emergency-Runbook.md`.
 
 ## FCI & Cluster Emergency Pack
 
-Samodzielny snapshot klastra:
+Toolkit nadal potrafi:
 
-```powershell
-.\Cluster\Get-ClusterSnapshot.ps1
-```
+- zebrać snapshot klastra,
+- pokazać stany nodów, grup i zasobów,
+- zebrać Network Name i IP,
+- pokazać quorum,
+- wykryć zasoby SQL Server/Agent,
+- rozwiązać aktywny node FCI.
 
-Dla konkretnego klastra:
-
-```powershell
-.\Cluster\Get-ClusterSnapshot.ps1 `
-    -ClusterName "CLUSTER01" `
-    -OutputPath ".\ClusterSnapshot"
-```
-
-Wyniki obejmują:
-
-- `Cluster.csv`
-- `Nodes.csv`
-- `Groups.csv`
-- `Resources.csv`
-- `NetworkNames.csv`
-- `IPAddresses.csv`
-- `Quorum.csv`
-- `SqlClusterResources.csv`
-- `SqlFciMap.csv`
-
-Aktywny node FCI można sprawdzić osobno:
-
-```powershell
-.\Cluster\Resolve-FciActiveNode.ps1 `
-    -SqlNetworkName "SQLFCI"
-```
-
-Szczegółowy runbook: `Docs/Cluster-FCI-Emergency-Runbook.md`.
-
-## Remote Server Collector
-
-`OS/Get-RemoteOSSnapshot.ps1` używa CIM/WMI oraz zdalnego odczytu Event Log i zbiera m.in. Windows, CPU, pamięć, dyski, procesy SQL Server, pagefile, usługi oraz podstawowe liczniki wydajności.
-
-W FCI `ComputerName` powinien wskazywać aktualny fizyczny owner node grupy SQL. Opcja `-ResolveFciActiveNode` może wykonać to mapowanie automatycznie, jeśli z hosta collectora dostępny jest moduł `FailoverClusters` i informacje klastra.
+Żaden skrypt nie wykonuje failoveru ani zmian w konfiguracji klastra.
 
 ## Network
 
-Warstwa Network działa z hosta, na którym uruchamiasz toolkit, do `ServerInstance`. Dzięki temu pokazuje ścieżkę połączenia z punktu widzenia klienta DBA/aplikacji.
-
-Pozytywny `Test-NetConnection` potwierdza osiągalność TCP, ale nie gwarantuje poprawnego TLS/pre-login handshake ani logowania SQL Server.
+Warstwa Network działa z hosta collectora do `ServerInstance`. Pozytywny `Test-NetConnection` potwierdza osiągalność TCP, ale nie gwarantuje poprawnego TLS/pre-login handshake ani logowania SQL Server.
 
 ## Extended Events
 
-Sesje XE w katalogu `XEvents` nie są uruchamiane automatycznie. Główny collector jedynie odczytuje stan sesji `SQLDBA_*`.
+Sesje XE w katalogu `XEvents` nie są uruchamiane automatycznie. Główny collector jedynie odczytuje ich stan.
 
 ## ProcDump i WPR
 
@@ -167,28 +167,32 @@ ProcDump i WPR/WPA pozostają akcjami ręcznymi. Toolkit nie uruchamia automatyc
 
 ## Fallback
 
-Jeżeli resolver FCI, zdalny CIM, Event Log albo collector klastra nie działa, toolkit zapisuje `*-error.txt` w odpowiednim katalogu i kontynuuje pozostałą diagnostykę.
+Jeżeli resolver FCI, zdalny CIM, Event Log, collector klastra lub collector storage nie działa, toolkit zapisuje `*-error.txt` i kontynuuje pozostałą diagnostykę.
 
 ## Wymagania
 
 Typowo potrzebne są:
 
-- moduł PowerShell `FailoverClusters` dla diagnostyki klastra,
-- odpowiednie prawa odczytu klastra,
-- poprawny DNS,
-- odpowiednie uprawnienia na hoście Windows,
-- dostęp CIM/WinRM,
-- reguły firewall dla zarządzania zdalnego,
-- dostęp do zdalnego Event Log,
-- `Invoke-Sqlcmd` lub `Invoke-DbaQuery` dla collectora SQL.
+- `Invoke-Sqlcmd` lub `Invoke-DbaQuery`,
+- `VIEW SERVER STATE` lub odpowiednie nowsze uprawnienia SQL Server,
+- moduł `FailoverClusters` dla diagnostyki FCI,
+- uprawnienia do zdalnego CIM/Event Log,
+- poprawny DNS i firewall.
 
 ## Bezpieczeństwo
 
-Collectory `TSQL`, `Network`, `OS` i `Cluster` są przeznaczone do odczytu. Nie restartują usług, nie zmieniają konfiguracji Windows, firewalla, WinRM ani klastra.
+Collectory `TSQL`, `Network`, `OS`, `Storage` i `Cluster` są przeznaczone do odczytu.
 
-Skrypty v0.7 nie wywołują `Move-ClusterGroup`, `Stop-ClusterResource`, `Start-ClusterResource`, `Suspend-ClusterNode` ani operacji failover.
+Nie wykonują:
 
-Skrypty `XEvents` wykonują świadome zmiany polegające na utworzeniu, uruchomieniu lub zatrzymaniu sesji Extended Events.
+- shrink,
+- resize/growth plików,
+- zmian autogrowth,
+- restartów usług,
+- failoveru,
+- zmian konfiguracji storage.
+
+Skrypty `XEvents` są wyjątkiem — świadomie tworzą, uruchamiają lub zatrzymują sesje Extended Events.
 
 ## Autor
 
