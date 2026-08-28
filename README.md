@@ -6,37 +6,28 @@ Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft S
 
 Repozytorium ma działać jak plecak awaryjny DBA: minimum teorii, maksimum skryptów gotowych do użycia.
 
-## Wersja 0.8
+## Wersja 0.9
 
-Wersja 0.8 dodaje **Storage & IO Emergency Pack**.
+Wersja 0.9 dodaje **Incident Report Generator**.
 
-Toolkit potrafi teraz korelować:
+Po zakończeniu collectora toolkit automatycznie analizuje zebrane pliki CSV i tworzy:
 
-- latency per plik SQL Server,
-- ustawienia autogrowth,
-- liczbę VLF,
-- IO tempdb,
-- wolne miejsce na wolumenach,
-- liczniki dysków logicznych i fizycznych Windows,
-- aktywny node FCI z właściwym hostem storage.
+- `Incident-Summary.md`
+- `Incident-Findings.csv`
 
-Wszystkie collectory storage są diagnostyczne/read-only.
+Wyniki są grupowane jako:
+
+- Critical
+- Warning
+- OK
+
+Raport jest heurystycznym triage i nie zastępuje pełnej analizy RCA.
 
 ## Szybki start
-
-### Zwykła instancja
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
     -ServerInstance "SQLPROD01,1433"
-```
-
-### Zdalny host Windows
-
-```powershell
-.\PowerShell\Collect-SqlIncident.ps1 `
-    -ServerInstance "SQLPROD01,1433" `
-    -ComputerName "SQLPROD01"
 ```
 
 ### FCI — automatyczne wykrycie aktywnego noda
@@ -48,8 +39,6 @@ Wszystkie collectory storage są diagnostyczne/read-only.
     -CollectCluster
 ```
 
-W tym trybie diagnostyka SQL idzie do VNN, a dane OS/storage są zbierane z aktywnego fizycznego noda.
-
 ### Availability Group
 
 ```powershell
@@ -58,100 +47,88 @@ W tym trybie diagnostyka SQL idzie do VNN, a dane OS/storage są zbierane z akty
     -ComputerName "SQLAG02"
 ```
 
-## Nowe pliki v0.8
+## Incident Report Generator
+
+Generator znajduje się w:
 
 ```text
-TSQL/
-├── StorageIO.sql
-├── FileGrowth.sql
-├── VLF.sql
-└── TempdbIO.sql
+Reports/New-IncidentSummary.ps1
+```
 
-OS/
-└── Get-StorageSnapshot.ps1
+Można go również uruchomić samodzielnie dla istniejącej paczki:
 
-Docs/
-└── Storage-IO-Emergency-Runbook.md
+```powershell
+.\Reports\New-IncidentSummary.ps1 `
+    -IncidentPath ".\Incidents\Incident-20260828-120000"
+```
+
+Analizowane są obecnie m.in.:
+
+- blocking,
+- latency plików SQL,
+- wolne miejsce na wolumenach,
+- stan nodów klastra,
+- błędy poszczególnych collectorów.
+
+Przykładowe wyniki:
+
+```text
+Critical
+- Blocking: Detected 5 blocking rows.
+- StorageIO: High file latency 54.0 ms for D:\Data\MyDb.mdf.
+
+Warning
+- FreeSpace: D: has 16.2% free.
+- Collector: 1 collector error file was generated.
+
+OK
+- Cluster: All captured cluster nodes are Up.
+```
+
+Progi są celowo traktowane jako heurystyki operacyjne, a nie SLA. Na przykład latency z `sys.dm_io_virtual_file_stats` jest kumulowane od startu instancji i należy je korelować z bieżącym workloadem oraz licznikami Windows.
+
+## Wynik collectora
+
+Przykładowa paczka v0.9:
+
+```text
+Incident-YYYYMMDD-HHMMSS/
+├── SQL/
+├── Network/
+├── OS/
+├── Storage/
+├── Cluster/
+├── EventLogs/
+├── Notes/
+├── incident-metadata.csv
+├── Incident-Findings.csv
+├── Incident-Summary.md
+└── Incident-Report-Console.txt
 ```
 
 ## Storage & IO Emergency Pack
 
-### SQL Server
+Toolkit koreluje:
 
-`TSQL/StorageIO.sql` korzysta z `sys.dm_io_virtual_file_stats` i pokazuje m.in.:
-
-- bazę,
-- typ pliku,
-- ścieżkę fizyczną,
-- liczbę odczytów i zapisów,
-- bytes read/write,
-- `AvgReadLatencyMs`,
-- `AvgWriteLatencyMs`.
-
-`TSQL/FileGrowth.sql` pokazuje rozmiary, MAXSIZE i konfigurację autogrowth.
-
-`TSQL/VLF.sql` zbiera liczbę VLF dla baz użytkownika.
-
-`TSQL/TempdbIO.sql` pokazuje latency osobno dla każdego pliku tempdb.
-
-### Windows / storage
-
-`OS/Get-StorageSnapshot.ps1` zbiera:
-
-- `Volumes.csv`,
-- `VolumeDetails.csv`,
-- `PhysicalDisks.csv`,
-- `LogicalDiskPerf.csv`,
-- `PhysicalDiskPerf.csv`.
-
-Dzięki temu można porównać latency widziane przez SQL Server z aktualnym stanem warstwy Windows.
-
-## Wynik collectora
-
-W paczce incydentu pojawia się teraz dodatkowy katalog:
-
-```text
-Storage/
-├── Volumes.csv
-├── VolumeDetails.csv
-├── PhysicalDisks.csv
-├── LogicalDiskPerf.csv
-├── PhysicalDiskPerf.csv
-└── Storage-Console.txt
-```
-
-Po stronie SQL dochodzą:
-
-```text
-SQL/
-├── StorageIO.csv
-├── FileGrowth.csv
-├── VLF.csv
-└── TempdbIO.csv
-```
-
-## Jak analizować IO
-
-Najpierw sprawdź `SQL/StorageIO.csv` i ustal, które pliki mają najwyższe read/write latency. Następnie z `physical_name` ustal wolumen i porównaj go z `Storage/LogicalDiskPerf.csv` oraz `Storage/PhysicalDiskPerf.csv`.
-
-Dla problemów z odczytem koreluj wyniki z waitami `PAGEIOLATCH_*`. Dla logu sprawdzaj szczególnie `WRITELOG`, growth logu i konfigurację VLF.
-
-Wartości z `sys.dm_io_virtual_file_stats` są kumulowane, więc mogą obejmować długi okres od startu instancji. Snapshot Windows pokazuje bieżący stan i dlatego oba źródła należy interpretować razem.
+- latency per plik SQL Server,
+- ustawienia autogrowth,
+- liczbę VLF,
+- IO tempdb,
+- wolne miejsce na wolumenach,
+- liczniki dysków Windows,
+- aktywny node FCI.
 
 Szczegółowy runbook: `Docs/Storage-IO-Emergency-Runbook.md`.
 
 ## FCI & Cluster Emergency Pack
 
-Toolkit nadal potrafi:
+Toolkit potrafi zebrać snapshot klastra oraz opcjonalnie samodzielnie rozwiązać aktywny node FCI przez `-ResolveFciActiveNode`.
 
-- zebrać snapshot klastra,
-- pokazać stany nodów, grup i zasobów,
-- zebrać Network Name i IP,
-- pokazać quorum,
-- wykryć zasoby SQL Server/Agent,
-- rozwiązać aktywny node FCI.
+Żaden skrypt cluster collectora nie wykonuje failoveru ani zmian w konfiguracji klastra.
 
-Żaden skrypt nie wykonuje failoveru ani zmian w konfiguracji klastra.
+## Remote Server Collector
+
+`ServerInstance` wskazuje endpoint SQL Server, a `ComputerName` konkretny host Windows. Dla FCI pozwala to osobno wskazać VNN i fizyczny node.
 
 ## Network
 
@@ -167,7 +144,7 @@ ProcDump i WPR/WPA pozostają akcjami ręcznymi. Toolkit nie uruchamia automatyc
 
 ## Fallback
 
-Jeżeli resolver FCI, zdalny CIM, Event Log, collector klastra lub collector storage nie działa, toolkit zapisuje `*-error.txt` i kontynuuje pozostałą diagnostykę.
+Jeżeli resolver FCI, zdalny CIM, Event Log, collector klastra, storage lub generator raportu nie działa, toolkit zapisuje `*-error.txt` i kontynuuje pozostałe kroki.
 
 ## Wymagania
 
@@ -181,16 +158,9 @@ Typowo potrzebne są:
 
 ## Bezpieczeństwo
 
-Collectory `TSQL`, `Network`, `OS`, `Storage` i `Cluster` są przeznaczone do odczytu.
+Collectory `TSQL`, `Network`, `OS`, `Storage`, `Cluster` oraz generator raportu są przeznaczone do odczytu.
 
-Nie wykonują:
-
-- shrink,
-- resize/growth plików,
-- zmian autogrowth,
-- restartów usług,
-- failoveru,
-- zmian konfiguracji storage.
+Nie wykonują shrink, zmian rozmiarów plików, restartów usług, failoveru ani zmian konfiguracji storage.
 
 Skrypty `XEvents` są wyjątkiem — świadomie tworzą, uruchamiają lub zatrzymują sesje Extended Events.
 
