@@ -6,9 +6,11 @@ Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft S
 
 Repozytorium ma działać jak plecak awaryjny DBA: minimum teorii, maksimum skryptów gotowych do użycia.
 
-## Wersja 0.4
+## Wersja 0.5
 
-Wersja 0.4 dodaje **Extended Events Emergency Pack**. Główny collector pozostaje read-only i nie uruchamia sesji XE automatycznie. Sesje Extended Events uruchamiasz świadomie tylko wtedy, gdy są potrzebne do konkretnego incydentu.
+Wersja 0.5 dodaje **Windows & OS Emergency Pack**. Główny collector zbiera teraz obok diagnostyki SQL i sieci również szybki snapshot systemu Windows: CPU, pamięć, dyski, procesy SQL Server, aktywne połączenia TCP, pagefile, usługi oraz podstawowe liczniki PerfMon.
+
+ProcDump i WPR/WPA są celowo pozostawione jako akcje ręczne. Toolkit nie uruchamia automatycznie dumpów ani trace ETW.
 
 ## Szybki start
 
@@ -32,7 +34,20 @@ Samodzielny test połączenia:
     -ServerInstance "SQLPROD01,1433"
 ```
 
+Samodzielny snapshot Windows/OS:
+
+```powershell
+.\OS\Get-OSSnapshot.ps1 `
+    -OutputPath ".\OSSnapshot"
+```
+
 Collector wykorzystuje `Invoke-Sqlcmd`, a jeżeli nie jest dostępny, próbuje `Invoke-DbaQuery` z modułu dbatools.
+
+## Ważne – host OS
+
+Skrypty z katalogu `OS` zbierają dane z komputera, na którym są uruchamiane. Jeśli główny collector uruchomisz z laptopa DBA, katalog `OS` będzie opisywał laptop, a nie host SQL Server.
+
+Aby zebrać stan systemu operacyjnego serwera SQL, uruchom toolkit na tym hoście albo przez zatwierdzony mechanizm PowerShell Remoting / jump host. W środowisku FCI interesuje Cię fizyczny aktywny node.
 
 ## Struktura
 
@@ -57,6 +72,11 @@ SQLDBA-EmergencyToolkit/
 ├── Network/
 │   ├── Test-SqlConnectivity.ps1
 │   └── Wireshark-Filters.md
+├── OS/
+│   ├── Get-OSSnapshot.ps1
+│   ├── Get-TopProcesses.ps1
+│   ├── ProcDump-Runbook.md
+│   └── WPR-Runbook.md
 ├── XEvents/
 │   ├── 01-Blocking.sql
 │   ├── 02-Deadlocks.sql
@@ -70,9 +90,28 @@ SQLDBA-EmergencyToolkit/
 ├── Docs/
 │   ├── Incident-Checklist.md
 │   ├── Network-Incident-Runbook.md
+│   ├── Windows-OS-Emergency-Runbook.md
 │   └── XEvents-Emergency-Runbook.md
 └── README.md
 ```
+
+## Windows & OS Emergency Pack
+
+`OS/Get-OSSnapshot.ps1` zbiera m.in.:
+
+- wersję i uptime Windows,
+- CPU i liczbę logical processors,
+- całkowitą i wolną pamięć,
+- lokalne wolumeny oraz wolne miejsce,
+- informacje o procesach `sqlservr.exe`,
+- aktywne połączenia TCP,
+- pagefile,
+- usługi SQL Server, SQL Agent, SQL Browser i Cluster Service,
+- szybki 5-sekundowy snapshot kluczowych liczników PerfMon.
+
+`OS/Get-TopProcesses.ps1` zapisuje listy procesów o największym zużyciu CPU i pamięci.
+
+Szczegóły interpretacji znajdują się w `Docs/Windows-OS-Emergency-Runbook.md`.
 
 ## Extended Events Emergency Pack
 
@@ -123,6 +162,17 @@ Incident-20260828-112500/
 │   ├── netstat-ano.txt
 │   ├── klist.txt
 │   └── SPN-query.txt
+├── OS/
+│   ├── OS.csv
+│   ├── CPU.csv
+│   ├── Disks.csv
+│   ├── SqlServerProcesses.csv
+│   ├── EstablishedTCP.csv
+│   ├── PerfCounters.csv
+│   ├── PageFile.csv
+│   ├── Services.csv
+│   ├── TopProcessesByCPU.csv
+│   └── TopProcessesByMemory.csv
 ├── EventLogs/
 │   ├── System.csv
 │   └── Application.csv
@@ -131,7 +181,7 @@ Incident-20260828-112500/
 └── incident-metadata.csv
 ```
 
-Jeżeli któryś collector nie może wykonać zapytania, zapisuje plik `*-error.txt` i przechodzi do kolejnych modułów.
+Jeżeli któryś collector nie może wykonać zapytania lub odczytu, zapisuje plik `*-error.txt` i przechodzi do kolejnych modułów.
 
 ## Diagnostyka połączeń SQL Server
 
@@ -163,11 +213,13 @@ Repozytorium nie przechowuje binariów narzędzi firm trzecich. Warto mieć loka
 3. Uruchom `Collect-SqlIncident.ps1`.
 4. Sprawdź aktywne requesty i blocking.
 5. Przeanalizuj waity, IO, pamięć, tempdb oraz log transakcyjny.
-6. Sprawdź backupy, SQL Server Agent, AG i replikację, jeśli są używane.
-7. Przy problemach z połączeniem sprawdź DNS, port, TCP, SPN/Kerberos, TLS i pre-login handshake oraz zbierz PCAP w Wiresharku.
-8. Jeżeli potrzebujesz obserwacji w czasie, uruchom tylko odpowiednią sesję XE z katalogu `XEvents`.
-9. Zatrzymaj sesję XE po reprodukcji problemu i zachowaj `.xel` razem z paczką incydentu.
-10. Zachowaj całą paczkę incydentu przed restartem lub zmianą konfiguracji.
+6. Porównaj SQL wait stats z CPU, pamięcią i latency na poziomie Windows.
+7. Sprawdź wolne miejsce na wolumenach oraz top procesy.
+8. Sprawdź backupy, SQL Server Agent, AG i replikację, jeśli są używane.
+9. Przy problemach z połączeniem sprawdź DNS, port, TCP, SPN/Kerberos, TLS i pre-login handshake oraz zbierz PCAP w Wiresharku.
+10. Jeżeli potrzebujesz obserwacji w czasie, uruchom tylko odpowiednią sesję XE z katalogu `XEvents`.
+11. Jeśli problem leży poniżej SQL Server, rozważ świadome użycie WPR/WPA. ProcDump stosuj tylko wtedy, gdy faktycznie potrzebujesz dumpu procesu.
+12. Zachowaj całą paczkę incydentu przed restartem lub zmianą konfiguracji.
 
 ## Uprawnienia
 
@@ -177,9 +229,13 @@ Polecenia `setspn` i `klist` służą tu do diagnostyki. Skrypt nie dodaje ani n
 
 Tworzenie i zarządzanie serwerowymi sesjami Extended Events wymaga odpowiednich uprawnień serwerowych.
 
+Odczyt części danych Windows może wymagać uruchomienia PowerShell z odpowiednimi uprawnieniami.
+
 ## Bezpieczeństwo
 
-Skrypty diagnostyczne w katalogu `TSQL` są przeznaczone do odczytu. Skrypty w katalogu `XEvents` wykonują zmiany polegające na utworzeniu, uruchomieniu lub zatrzymaniu sesji Extended Events i są celowo oddzielone od collectorów read-only.
+Skrypty diagnostyczne w katalogach `TSQL`, `Network` i `OS` są przeznaczone do odczytu. Skrypty w katalogu `XEvents` wykonują zmiany polegające na utworzeniu, uruchomieniu lub zatrzymaniu sesji Extended Events i są celowo oddzielone od collectorów read-only.
+
+ProcDump i WPR/WPA nie są uruchamiane automatycznie przez toolkit.
 
 ## Autor
 
