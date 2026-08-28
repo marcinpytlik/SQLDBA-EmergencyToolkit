@@ -4,16 +4,11 @@ Ten runbook pokazuje, jak za pomocą Sysinternals Process Monitor (Procmon) prze
 
 > Procmon jest narzędziem diagnostycznym. Na obciążonej produkcji zawsze używaj wąskich filtrów i krótkich okien capture.
 
-## Cel
+Pełny workflow przygotowania symboli offline znajduje się także w:
 
-Chcemy odpowiedzieć na pytania:
-
-- które operacje plikowe wykonuje `sqlservr.exe`,
-- do jakich plików zapisuje,
-- jaka jest kolejność operacji wokół COMMIT/CHECKPOINT,
-- jak wygląda stack dla `WriteFile`,
-- gdzie pojawiają się `KERNELBASE.dll`, `ntdll.dll`, `ntfs.sys`, `fltmgr.sys`, `storport.sys` itd.,
-- czym różni się zapis do MDF/NDF od zapisu do LDF.
+```text
+Docs/Offline-Symbols-Workflow.md
+```
 
 ## 1. Przygotowanie Procmon
 
@@ -43,20 +38,15 @@ albo dla całego katalogu danych:
 Path    begins with    D:\SQLData\    Include
 ```
 
-Na produkcji najlepiej ograniczać się do konkretnego pliku lub katalogu.
-
 ## 2. Jakie operacje obserwować
 
-Nie ograniczaj pierwszego testu tylko do `WriteFile`.
-
-Warto obserwować m.in.:
+Na początku nie ograniczaj capture wyłącznie do `WriteFile`. Warto zobaczyć m.in.:
 
 - `CreateFile`
 - `WriteFile`
 - `ReadFile`
 - `QueryInformationFile`
 - `QueryInformationVolume`
-- operacje związane z flush/synchronizacją
 
 Po pierwszym przeglądzie możesz zawęzić filtr do:
 
@@ -66,9 +56,7 @@ Operation    is    WriteFile    Include
 
 ## 3. Kontrolowany test SQL
 
-Najlepiej wykonać test w bazie laboratoryjnej.
-
-Przykład tabeli:
+Najlepiej wykonywać go w bazie laboratoryjnej.
 
 ```sql
 CREATE TABLE dbo.TestIO
@@ -78,41 +66,29 @@ CREATE TABLE dbo.TestIO
 );
 ```
 
-### Test A - INSERT
+### INSERT
 
 ```sql
 INSERT INTO dbo.TestIO(SomeValue)
 VALUES (REPLICATE('X', 1000));
 ```
 
-### Test B - COMMIT
+### COMMIT
 
 ```sql
 BEGIN TRAN;
-
 INSERT INTO dbo.TestIO(SomeValue)
 VALUES (REPLICATE('L', 1000));
-
 COMMIT;
 ```
 
-### Test C - CHECKPOINT
+### CHECKPOINT
 
 ```sql
 CHECKPOINT;
 ```
 
-### Test D - większa porcja danych
-
-```sql
-INSERT INTO dbo.TestIO(SomeValue)
-SELECT TOP (10000)
-       REPLICATE('D', 4000)
-FROM sys.all_objects a
-CROSS JOIN sys.all_objects b;
-```
-
-Po uruchomieniu testu zatrzymaj capture `Ctrl+E`.
+Po teście zatrzymaj capture `Ctrl+E`.
 
 ## 4. MDF/NDF kontra LDF
 
@@ -133,33 +109,20 @@ Path contains MyDatabase_log.ldf
 Typowa obserwacja:
 
 ```text
-COMMIT
-  -> zapis odpowiedniego fragmentu logu
-  -> LDF
+COMMIT -> zapis logu -> LDF
 ```
 
-natomiast dirty pages z buffer pool mogą zostać zapisane do MDF później, np. przez CHECKPOINT.
-
-To dobry sposób, aby zobaczyć praktyczną różnicę między trwałością transakcji a fizycznym zapisem stron danych.
+Dirty pages z buffer pool mogą zostać zapisane do MDF/NDF później, np. przez CHECKPOINT.
 
 ## 5. Stack dla konkretnego zdarzenia
 
-Kliknij dwukrotnie zdarzenie, np.:
+Kliknij dwukrotnie interesujące zdarzenie `WriteFile` i przejdź do:
 
 ```text
-sqlservr.exe
-WriteFile
-D:\SQLData\MyDatabase.mdf
-SUCCESS
+Event Properties -> Stack
 ```
 
-Przejdź do zakładki:
-
-```text
-Stack
-```
-
-Bez poprawnie skonfigurowanych symboli możesz zobaczyć głównie moduły i offsety:
+Bez symboli możesz zobaczyć głównie moduły i offsety:
 
 ```text
 sqlservr.exe+0x...
@@ -169,9 +132,7 @@ ntoskrnl.exe+0x...
 ntfs.sys+0x...
 ```
 
-Po załadowaniu symboli część stacku Windows może zostać rozwiązana do nazw funkcji.
-
-Przykładowa ścieżka może wyglądać mniej więcej tak:
+Po poprawnym załadowaniu symboli część stacku Windows zostanie rozwiązana do nazw funkcji, np.:
 
 ```text
 sqlservr.exe
@@ -180,119 +141,106 @@ sqlservr.exe
   -> ntoskrnl.exe
   -> fltmgr.sys
   -> ntfs.sys
-  -> storport.sys / stornvme.sys / driver storage vendor
+  -> storport.sys / stornvme.sys / vendor driver
 ```
 
-Dokładny stack zależy od wersji Windows, sterowników i warstwy storage.
+Dokładny stack zależy od wersji Windows, SQL Server i warstwy storage.
 
-## 6. Konfiguracja symboli online
+## 6. Standardowa struktura symboli na stacji DBA
 
-Jeżeli serwer ma dostęp do Internetu, możesz użyć Microsoft Symbol Server.
-
-W Procmon:
-
-```text
-Options
--> Configure Symbols...
-```
-
-Przykładowy symbol path:
-
-```text
-srv*C:\Symbols*https://msdl.microsoft.com/download/symbols
-```
-
-`C:\Symbols` będzie lokalnym cache.
-
-Pierwsze otwarcie stacku może być wolniejsze, bo symbole będą pobierane na żądanie.
-
-## 7. Symbole offline
-
-Dla serwera bez Internetu użyj:
-
-```text
-PowerShell/Prepare-OfflineSymbols.ps1
-```
-
-Skrypt ma dwa tryby:
-
-- `CollectTargets`
-- `DownloadSymbols`
-
-### Krok 1 - serwer SQL bez Internetu
-
-Najpierw sprawdź ścieżkę do procesu SQL Server:
-
-```powershell
-Get-Process sqlservr | Select-Object -ExpandProperty Path
-```
-
-Przykład:
-
-```text
-C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn\sqlservr.exe
-```
-
-Uruchom:
-
-```powershell
-.\PowerShell\Prepare-OfflineSymbols.ps1 `
-    -Mode CollectTargets `
-    -WorkingDirectory C:\SQLSymbols `
-    -SqlBinnPath "C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn"
-```
-
-Powstanie m.in.:
+Przyjmujemy:
 
 ```text
 C:\SQLSymbols\
 ├── Targets\
-│   ├── Windows\
-│   ├── Drivers\
-│   └── SQLServer\
+│   ├── SQLPROD01\
+│   ├── SQLPROD02\
+│   └── ...
+├── Symbols\
 ├── Logs\
-└── SymbolTargets.csv
+└── Tools\
 ```
 
-`SymbolTargets.csv` zawiera wersje plików, dzięki czemu wiadomo, dla jakiego buildu przygotowano cache.
+`Targets` przechowuje dokładne binaria z serwerów, a `Symbols` jest wspólnym cache PDB.
 
-### Krok 2 - komputer z Internetem
+## 7. Krok 1 - kopiowanie binariów z produkcji
 
-Na komputerze z Internetem zainstaluj Debugging Tools for Windows i upewnij się, że dostępny jest `symchk.exe`.
+Na serwerze SQL uruchom:
 
-Typowa lokalizacja:
+```powershell
+.\PowerShell\Copy-SqlSymbolTargetsToWorkstation.ps1 `
+    -DestinationPath "\\DBAWORKSTATION\SQLSymbols$\Targets" `
+    -IncludeOptionalDrivers
+```
+
+Skrypt automatycznie utworzy podkatalog nazwy serwera, np.:
+
+```text
+C:\SQLSymbols\Targets\SQLPROD01\
+├── Windows\
+├── Drivers\
+├── SQLServer\
+├── Logs\
+├── SymbolTargets.csv
+└── CopySummary.csv
+```
+
+Skrypt wykrywa również wszystkie działające procesy `sqlservr.exe` i ich katalogi BINN.
+
+## 8. Krok 2 - pobieranie symboli na stacji z Internetem
+
+Na stacji DBA zainstaluj Debugging Tools for Windows. Typowa lokalizacja:
 
 ```text
 C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\symchk.exe
 ```
 
-Skopiuj na ten komputer katalog `C:\SQLSymbols`, a następnie uruchom:
+Następnie uruchom:
 
 ```powershell
 .\PowerShell\Prepare-OfflineSymbols.ps1 `
     -Mode DownloadSymbols `
-    -WorkingDirectory C:\SQLSymbols
+    -WorkingDirectory "C:\SQLSymbols"
 ```
 
-Skrypt użyje Microsoft Symbol Server i utworzy lokalny cache:
+Skrypt rekurencyjnie przejrzy wszystkie `EXE`, `DLL` i `SYS` w:
+
+```text
+C:\SQLSymbols\Targets
+```
+
+i zapisze pobrane PDB w:
 
 ```text
 C:\SQLSymbols\Symbols
 ```
 
-### Krok 3 - powrót na serwer offline
+Logi `symchk.exe` trafią do:
 
-Skopiuj katalog `Symbols` na serwer, np.:
+```text
+C:\SQLSymbols\Logs
+```
+
+## 9. Krok 3 - symbole wracają na serwer offline
+
+Z powrotem na produkcję kopiujesz przede wszystkim:
+
+```text
+C:\SQLSymbols\Symbols
+```
+
+np. jako:
 
 ```text
 D:\DBATools\Symbols
 ```
 
+Nie musisz kopiować z powrotem katalogu `Targets`.
+
 W Procmon ustaw:
 
 ```text
-Options
--> Configure Symbols...
+Options -> Configure Symbols...
 ```
 
 Symbol path:
@@ -301,11 +249,9 @@ Symbol path:
 D:\DBATools\Symbols
 ```
 
-Bez adresu internetowego.
+Dla serwera offline bez adresu Microsoft Symbol Server.
 
-## 8. Co pobiera Prepare-OfflineSymbols.ps1
-
-Skrypt zbiera m.in.:
+## 10. Co jest zbierane
 
 ### Windows user mode
 
@@ -316,7 +262,7 @@ Skrypt zbiera m.in.:
 - `rpcrt4.dll`
 - `ntoskrnl.exe`
 
-### File system / storage drivers
+### File system / storage
 
 - `ntfs.sys`
 - `fltmgr.sys`
@@ -324,13 +270,13 @@ Skrypt zbiera m.in.:
 - `volmgr.sys`
 - `volsnap.sys`
 - `storport.sys`
-- `stornvme.sys`
-- `spaceport.sys`
 - `classpnp.sys`
+
+Przy `-IncludeOptionalDrivers` również m.in. `stornvme.sys`, `spaceport.sys`, `partmgr.sys`, `volume.sys`, `mountmgr.sys`.
 
 ### SQL Server
 
-Jeżeli podasz `-SqlBinnPath`, skrypt kopiuje m.in.:
+Domyślnie m.in.:
 
 - `sqlservr.exe`
 - `sqllang.dll`
@@ -339,9 +285,9 @@ Jeżeli podasz `-SqlBinnPath`, skrypt kopiuje m.in.:
 - `sqltses.dll`
 - `sqlmanager.dll`
 
-Publiczny Microsoft Symbol Server może nie zawierać pełnych prywatnych symboli SQL Server. Dlatego po stronie SQL Server często nadal zobaczysz offsety zamiast nazw funkcji.
+Publiczny Microsoft Symbol Server może nie zawierać pełnych prywatnych symboli SQL Server. Dlatego część ramek SQL może nadal pozostać jako `sqlservr.exe+offset`.
 
-## 9. Przydatne kolumny w Procmon
+## 11. Przydatne kolumny w Procmon
 
 Warto mieć widoczne:
 
@@ -355,17 +301,9 @@ Warto mieć widoczne:
 - Duration
 - TID
 
-`Duration` bywa szczególnie przydatne podczas diagnozy wolnego storage.
+## 12. Bezpieczeństwo na produkcji
 
-## 10. Bezpieczeństwo na produkcji
-
-Nie uruchamiaj szerokiego capture typu:
-
-```text
-Process Name is sqlservr.exe
-```
-
-na długo na bardzo obciążonej instancji.
+Nie pozostawiaj szerokiego capture na długo na obciążonej instancji.
 
 Lepszy filtr:
 
@@ -383,9 +321,9 @@ AND
 Path is D:\SQLData\ProblemDatabase.mdf
 ```
 
-Zbieraj przez kilkanaście-kilkadziesiąt sekund, wykonaj kontrolowaną operację i zatrzymaj capture.
+Zbieraj przez krótki czas, wykonaj kontrolowaną operację i zatrzymaj capture.
 
-## 11. Co oznaczają typowe obserwacje
+## 13. Interpretacja
 
 ### WriteFile do LDF po COMMIT
 
@@ -400,30 +338,28 @@ Normalny zapis dirty pages z buffer pool do plików danych.
 Może wskazywać na opóźnienie storage, ale nie przesądza o przyczynie. Koreluj z:
 
 - `sys.dm_io_virtual_file_stats`
-- waitami `WRITELOG`, `PAGEIOLATCH_*`
+- `WRITELOG`
+- `PAGEIOLATCH_*`
 - Windows PerfMon
 - Storage & IO Emergency Pack z tego repo
 
 ### Stack zawiera driver producenta HBA/SAN/VM
 
-Warto dołączyć ten sterownik do listy plików w `Prepare-OfflineSymbols.ps1`, aby przygotować właściwe symbole, jeśli producent je udostępnia.
+Warto zidentyfikować dokładny sterownik. Microsoft Symbol Server może nie zawierać jego symboli; wtedy trzeba korzystać z symboli producenta, jeśli są dostępne.
 
-## 12. Polecany mini-LAB
-
-Najlepszy zestaw testów:
+## 14. Polecany mini-LAB
 
 1. INSERT bez CHECKPOINT
 2. INSERT + COMMIT
 3. CHECKPOINT
-4. duży INSERT
+4. większy INSERT
 5. opcjonalnie BACKUP DATABASE
 
-Dla każdego porównaj osobno:
+Dla każdego testu porównaj:
 
 - MDF/NDF
 - LDF
-- plik backupu
 - stack wywołań
 - Duration
 
-Dzięki temu można bardzo dobrze zobaczyć, jak SQL Server używa Windows I/O w praktyce.
+To pozwala bardzo dobrze zobaczyć, jak SQL Server przechodzi z własnej warstwy I/O do Windows i storage.
