@@ -17,10 +17,11 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $incidentDir = Join-Path $OutputRoot "Incident-$timestamp"
 $sqlDir = Join-Path $incidentDir "SQL"
 $networkDir = Join-Path $incidentDir "Network"
+$osDir = Join-Path $incidentDir "OS"
 $eventDir = Join-Path $incidentDir "EventLogs"
 $notesDir = Join-Path $incidentDir "Notes"
 
-@($incidentDir, $sqlDir, $networkDir, $eventDir, $notesDir) | ForEach-Object {
+@($incidentDir, $sqlDir, $networkDir, $osDir, $eventDir, $notesDir) | ForEach-Object {
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
 }
 
@@ -32,7 +33,7 @@ $meta = [pscustomobject]@{
     Database       = $Database
     ToolkitRoot    = $ToolkitRoot
     PowerShell     = $PSVersionTable.PSVersion.ToString()
-    ToolkitVersion = "0.4"
+    ToolkitVersion = "0.5"
 }
 $meta | Export-Csv (Join-Path $incidentDir "incident-metadata.csv") -NoTypeInformation -Encoding UTF8
 
@@ -115,6 +116,31 @@ else {
     "Network collector not found: $networkScript" | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
 }
 
+$osSnapshotScript = Join-Path $ToolkitRoot "OS\Get-OSSnapshot.ps1"
+if (Test-Path $osSnapshotScript) {
+    try {
+        Write-Host "Collecting Windows/OS diagnostics..."
+        & $osSnapshotScript -OutputPath $osDir | Out-String |
+            Out-File (Join-Path $osDir "OS-Console.txt") -Encoding utf8
+    }
+    catch {
+        $_ | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
+    }
+}
+else {
+    "OS collector not found: $osSnapshotScript" | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
+}
+
+$topProcessesScript = Join-Path $ToolkitRoot "OS\Get-TopProcesses.ps1"
+if (Test-Path $topProcessesScript) {
+    try {
+        & $topProcessesScript -OutputPath $osDir
+    }
+    catch {
+        $_ | Out-File (Join-Path $osDir "TopProcesses-error.txt") -Encoding utf8
+    }
+}
+
 try {
     Get-WinEvent -LogName System -MaxEvents 500 |
         Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
@@ -143,10 +169,12 @@ Recent changes:
 Actions already taken:
 Extended Events session started:
 Extended Events start time:
+ProcDump/WPR started:
+ProcDump/WPR output path:
 Additional observations:
 "@ | Out-File (Join-Path $notesDir "incident-notes.txt") -Encoding utf8
 
 Write-Host ""
 Write-Host "Incident package created: $incidentDir"
 Write-Host "Review *-error.txt files to see which collectors could not run."
-Write-Host "XE sessions are NOT started automatically. Use the scripts in XEvents only when needed."
+Write-Host "XE sessions, ProcDump and WPR are NOT started automatically."
