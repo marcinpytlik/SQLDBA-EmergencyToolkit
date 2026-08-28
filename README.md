@@ -2,6 +2,14 @@
 
 Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft SQL Server podczas diagnostyki awarii, problemów wydajnościowych, blokad, problemów sieciowych i operacyjnych.
 
+## Jak uruchamiać toolkit
+
+Pełny przewodnik z gotowymi komendami dla standardowej instancji, FCI, AG, sieci, OS, storage, Extended Events i raportów znajduje się tutaj:
+
+**[Docs/How-To-Run.md](Docs/How-To-Run.md)**
+
+Jeżeli używasz toolkitu pierwszy raz, zacznij właśnie od tego dokumentu.
+
 ## Wersja 1.0
 
 Wersja 1.0 dodaje **Health Score + HTML Report**.
