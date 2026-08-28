@@ -3,6 +3,9 @@ param(
     [string]$ServerInstance,
 
     [Parameter(Mandatory = $false)]
+    [string]$ComputerName,
+
+    [Parameter(Mandatory = $false)]
     [string]$Database = "master",
 
     [Parameter(Mandatory = $false)]
@@ -25,15 +28,20 @@ $notesDir = Join-Path $incidentDir "Notes"
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
 }
 
+$osTarget = if ([string]::IsNullOrWhiteSpace($ComputerName)) { $env:COMPUTERNAME } else { $ComputerName }
+$osMode = if ([string]::IsNullOrWhiteSpace($ComputerName)) { "Local" } else { "Remote" }
+
 $meta = [pscustomobject]@{
     CollectedAt    = Get-Date
     CollectorHost  = $env:COMPUTERNAME
     CollectorUser  = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     ServerInstance = $ServerInstance
+    ComputerName   = $osTarget
+    OSCollection   = $osMode
     Database       = $Database
     ToolkitRoot    = $ToolkitRoot
     PowerShell     = $PSVersionTable.PSVersion.ToString()
-    ToolkitVersion = "0.5"
+    ToolkitVersion = "0.6"
 }
 $meta | Export-Csv (Join-Path $incidentDir "incident-metadata.csv") -NoTypeInformation -Encoding UTF8
 
@@ -104,7 +112,7 @@ foreach ($item in $scriptMap) {
 $networkScript = Join-Path $ToolkitRoot "Network\Test-SqlConnectivity.ps1"
 if (Test-Path $networkScript) {
     try {
-        Write-Host "Collecting Network diagnostics..."
+        Write-Host "Collecting Network diagnostics from $env:COMPUTERNAME to $ServerInstance..."
         & $networkScript -ServerInstance $ServerInstance -OutputPath $networkDir | Out-String |
             Out-File (Join-Path $networkDir "Network-Console.txt") -Encoding utf8
     }
@@ -116,44 +124,73 @@ else {
     "Network collector not found: $networkScript" | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
 }
 
-$osSnapshotScript = Join-Path $ToolkitRoot "OS\Get-OSSnapshot.ps1"
-if (Test-Path $osSnapshotScript) {
-    try {
-        Write-Host "Collecting Windows/OS diagnostics..."
-        & $osSnapshotScript -OutputPath $osDir | Out-String |
-            Out-File (Join-Path $osDir "OS-Console.txt") -Encoding utf8
+if ($osMode -eq 'Remote') {
+    $remoteOSScript = Join-Path $ToolkitRoot "OS\Get-RemoteOSSnapshot.ps1"
+    if (Test-Path $remoteOSScript) {
+        try {
+            Write-Host "Collecting remote Windows/OS diagnostics from $osTarget..."
+            & $remoteOSScript -ComputerName $osTarget -OutputPath $osDir | Out-String |
+                Out-File (Join-Path $osDir "OS-Console.txt") -Encoding utf8
+        }
+        catch {
+            $_ | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
+        }
     }
-    catch {
-        $_ | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
+    else {
+        "Remote OS collector not found: $remoteOSScript" | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
     }
 }
 else {
-    "OS collector not found: $osSnapshotScript" | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
-}
-
-$topProcessesScript = Join-Path $ToolkitRoot "OS\Get-TopProcesses.ps1"
-if (Test-Path $topProcessesScript) {
-    try {
-        & $topProcessesScript -OutputPath $osDir
+    $osSnapshotScript = Join-Path $ToolkitRoot "OS\Get-OSSnapshot.ps1"
+    if (Test-Path $osSnapshotScript) {
+        try {
+            Write-Host "Collecting local Windows/OS diagnostics..."
+            & $osSnapshotScript -OutputPath $osDir | Out-String |
+                Out-File (Join-Path $osDir "OS-Console.txt") -Encoding utf8
+        }
+        catch {
+            $_ | Out-File (Join-Path $osDir "OS-Collector-error.txt") -Encoding utf8
+        }
     }
-    catch {
-        $_ | Out-File (Join-Path $osDir "TopProcesses-error.txt") -Encoding utf8
+
+    $topProcessesScript = Join-Path $ToolkitRoot "OS\Get-TopProcesses.ps1"
+    if (Test-Path $topProcessesScript) {
+        try {
+            & $topProcessesScript -OutputPath $osDir
+        }
+        catch {
+            $_ | Out-File (Join-Path $osDir "TopProcesses-error.txt") -Encoding utf8
+        }
     }
 }
 
 try {
-    Get-WinEvent -LogName System -MaxEvents 500 |
-        Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
-        Export-Csv (Join-Path $eventDir "System.csv") -NoTypeInformation -Encoding UTF8
+    if ($osMode -eq 'Remote') {
+        Get-WinEvent -ComputerName $osTarget -LogName System -MaxEvents 500 |
+            Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+            Export-Csv (Join-Path $eventDir "System.csv") -NoTypeInformation -Encoding UTF8
+    }
+    else {
+        Get-WinEvent -LogName System -MaxEvents 500 |
+            Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+            Export-Csv (Join-Path $eventDir "System.csv") -NoTypeInformation -Encoding UTF8
+    }
 }
 catch {
     $_ | Out-File (Join-Path $eventDir "System-error.txt") -Encoding utf8
 }
 
 try {
-    Get-WinEvent -LogName Application -MaxEvents 500 |
-        Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
-        Export-Csv (Join-Path $eventDir "Application.csv") -NoTypeInformation -Encoding UTF8
+    if ($osMode -eq 'Remote') {
+        Get-WinEvent -ComputerName $osTarget -LogName Application -MaxEvents 500 |
+            Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+            Export-Csv (Join-Path $eventDir "Application.csv") -NoTypeInformation -Encoding UTF8
+    }
+    else {
+        Get-WinEvent -LogName Application -MaxEvents 500 |
+            Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+            Export-Csv (Join-Path $eventDir "Application.csv") -NoTypeInformation -Encoding UTF8
+    }
 }
 catch {
     $_ | Out-File (Join-Path $eventDir "Application-error.txt") -Encoding utf8
@@ -167,6 +204,9 @@ Symptoms:
 Affected applications:
 Recent changes:
 Actions already taken:
+SQL target: $ServerInstance
+Windows target: $osTarget
+OS collection mode: $osMode
 Extended Events session started:
 Extended Events start time:
 ProcDump/WPR started:
@@ -176,5 +216,7 @@ Additional observations:
 
 Write-Host ""
 Write-Host "Incident package created: $incidentDir"
+Write-Host "SQL target: $ServerInstance"
+Write-Host "Windows target: $osTarget ($osMode)"
 Write-Host "Review *-error.txt files to see which collectors could not run."
 Write-Host "XE sessions, ProcDump and WPR are NOT started automatically."
