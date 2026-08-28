@@ -6,14 +6,21 @@ Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft S
 
 Repozytorium ma działać jak plecak awaryjny DBA: minimum teorii, maksimum skryptów gotowych do użycia.
 
-## Wersja 0.6
+## Wersja 0.7
 
-Wersja 0.6 dodaje **Remote Server Collector**. `ServerInstance` i `ComputerName` są teraz niezależne:
+Wersja 0.7 dodaje **FCI & Cluster Emergency Pack**.
 
-- `ServerInstance` wskazuje endpoint SQL Server, np. FCI VNN, AG listener albo `host,port`.
-- `ComputerName` wskazuje fizyczny host Windows, z którego pobierane są dane OS i Event Log.
+Toolkit potrafi teraz:
 
-Jeżeli `-ComputerName` nie zostanie podany, toolkit działa jak wcześniej i zbiera dane OS lokalnie.
+- zebrać snapshot Windows Server Failover Cluster,
+- pokazać stany nodów, grup i zasobów,
+- zebrać Network Name oraz adresy IP klastra,
+- pokazać quorum,
+- wykryć zasoby SQL Server / SQL Server Agent,
+- zmapować grupę SQL FCI do aktywnego noda,
+- opcjonalnie samodzielnie ustalić aktywny node FCI i użyć go jako `ComputerName` dla diagnostyki OS.
+
+Żaden skrypt v0.7 nie wykonuje failoveru ani zmian w konfiguracji klastra.
 
 ## Szybki start
 
@@ -32,15 +39,25 @@ Jeżeli `-ComputerName` nie zostanie podany, toolkit działa jak wcześniej i zb
     -ComputerName "SQLPROD01"
 ```
 
-### FCI
+### FCI — znany aktywny node
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
     -ServerInstance "SQLFCI,1530" `
-    -ComputerName "SQLNODE02"
+    -ComputerName "SQLNODE02" `
+    -CollectCluster
 ```
 
-SQL diagnostyka idzie do `SQLFCI,1530`, a Windows/OS do fizycznego noda `SQLNODE02`.
+### FCI — automatyczne wykrycie aktywnego noda
+
+```powershell
+.\PowerShell\Collect-SqlIncident.ps1 `
+    -ServerInstance "SQLFCI,1530" `
+    -ResolveFciActiveNode `
+    -CollectCluster
+```
+
+Dla `SQLFCI,1530` toolkit użyje nazwy `SQLFCI` jako Network Name/DNS Name FCI, spróbuje ustalić owner node grupy SQL i wykorzysta ten node do zdalnego collectora OS i Event Log.
 
 ### Availability Group
 
@@ -77,48 +94,66 @@ SQLDBA-EmergencyToolkit/
 │   ├── Get-TopProcesses.ps1
 │   ├── ProcDump-Runbook.md
 │   └── WPR-Runbook.md
+├── Cluster/
+│   ├── Get-ClusterSnapshot.ps1
+│   └── Resolve-FciActiveNode.ps1
 ├── XEvents/
 ├── Docs/
 │   ├── Incident-Checklist.md
 │   ├── Network-Incident-Runbook.md
 │   ├── Windows-OS-Emergency-Runbook.md
 │   ├── XEvents-Emergency-Runbook.md
-│   └── Remote-Collector-Runbook.md
+│   ├── Remote-Collector-Runbook.md
+│   └── Cluster-FCI-Emergency-Runbook.md
 └── README.md
 ```
 
+## FCI & Cluster Emergency Pack
+
+Samodzielny snapshot klastra:
+
+```powershell
+.\Cluster\Get-ClusterSnapshot.ps1
+```
+
+Dla konkretnego klastra:
+
+```powershell
+.\Cluster\Get-ClusterSnapshot.ps1 `
+    -ClusterName "CLUSTER01" `
+    -OutputPath ".\ClusterSnapshot"
+```
+
+Wyniki obejmują:
+
+- `Cluster.csv`
+- `Nodes.csv`
+- `Groups.csv`
+- `Resources.csv`
+- `NetworkNames.csv`
+- `IPAddresses.csv`
+- `Quorum.csv`
+- `SqlClusterResources.csv`
+- `SqlFciMap.csv`
+
+Aktywny node FCI można sprawdzić osobno:
+
+```powershell
+.\Cluster\Resolve-FciActiveNode.ps1 `
+    -SqlNetworkName "SQLFCI"
+```
+
+Szczegółowy runbook: `Docs/Cluster-FCI-Emergency-Runbook.md`.
+
 ## Remote Server Collector
 
-`OS/Get-RemoteOSSnapshot.ps1` używa CIM/WMI oraz zdalnego odczytu Event Log i zbiera m.in.:
+`OS/Get-RemoteOSSnapshot.ps1` używa CIM/WMI oraz zdalnego odczytu Event Log i zbiera m.in. Windows, CPU, pamięć, dyski, procesy SQL Server, pagefile, usługi oraz podstawowe liczniki wydajności.
 
-- Windows/version/uptime,
-- CPU i pamięć,
-- dyski oraz wolne miejsce,
-- procesy `sqlservr.exe`,
-- pagefile,
-- usługi SQL Server/Agent/Browser/Cluster,
-- liczniki CPU, pamięci i dysków,
-- TOP procesów według CPU i pamięci,
-- logi System i Application.
-
-Szczegóły znajdują się w `Docs/Remote-Collector-Runbook.md`.
-
-## Ważne przy FCI i AG
-
-W FCI `ComputerName` powinien być aktywnym fizycznym nodem, nie VNN ani nazwą klastra.
-
-W AG `ServerInstance` może wskazywać listener, ale `ComputerName` powinien być konkretną repliką, której OS chcesz analizować.
-
-Przykład:
-
-```text
-ServerInstance = SQLPROD-FCI,1530
-ComputerName   = SQLNODE-B
-```
+W FCI `ComputerName` powinien wskazywać aktualny fizyczny owner node grupy SQL. Opcja `-ResolveFciActiveNode` może wykonać to mapowanie automatycznie, jeśli z hosta collectora dostępny jest moduł `FailoverClusters` i informacje klastra.
 
 ## Network
 
-Warstwa Network nadal działa z hosta, na którym uruchamiasz toolkit, do `ServerInstance`. Dzięki temu pokazuje ścieżkę połączenia z punktu widzenia klienta DBA/aplikacji.
+Warstwa Network działa z hosta, na którym uruchamiasz toolkit, do `ServerInstance`. Dzięki temu pokazuje ścieżkę połączenia z punktu widzenia klienta DBA/aplikacji.
 
 Pozytywny `Test-NetConnection` potwierdza osiągalność TCP, ale nie gwarantuje poprawnego TLS/pre-login handshake ani logowania SQL Server.
 
@@ -132,29 +167,26 @@ ProcDump i WPR/WPA pozostają akcjami ręcznymi. Toolkit nie uruchamia automatyc
 
 ## Fallback
 
-Jeżeli zdalny CIM albo Event Log nie działa, collector zapisuje `*-error.txt` w katalogu `OS` lub `EventLogs` i kontynuuje pozostałą diagnostykę SQL/Network.
+Jeżeli resolver FCI, zdalny CIM, Event Log albo collector klastra nie działa, toolkit zapisuje `*-error.txt` w odpowiednim katalogu i kontynuuje pozostałą diagnostykę.
 
-## Wymagania zdalnego collectora
+## Wymagania
 
 Typowo potrzebne są:
 
+- moduł PowerShell `FailoverClusters` dla diagnostyki klastra,
+- odpowiednie prawa odczytu klastra,
 - poprawny DNS,
 - odpowiednie uprawnienia na hoście Windows,
 - dostęp CIM/WinRM,
 - reguły firewall dla zarządzania zdalnego,
-- dostęp do zdalnego Event Log.
-
-Przydatne testy:
-
-```powershell
-Test-WSMan SQLNODE02
-Get-CimInstance Win32_OperatingSystem -ComputerName SQLNODE02
-Get-WinEvent -ComputerName SQLNODE02 -LogName System -MaxEvents 5
-```
+- dostęp do zdalnego Event Log,
+- `Invoke-Sqlcmd` lub `Invoke-DbaQuery` dla collectora SQL.
 
 ## Bezpieczeństwo
 
-Collectory `TSQL`, `Network` i `OS` są przeznaczone do odczytu. Nie restartują usług i nie zmieniają konfiguracji Windows, firewalla ani WinRM.
+Collectory `TSQL`, `Network`, `OS` i `Cluster` są przeznaczone do odczytu. Nie restartują usług, nie zmieniają konfiguracji Windows, firewalla, WinRM ani klastra.
+
+Skrypty v0.7 nie wywołują `Move-ClusterGroup`, `Stop-ClusterResource`, `Start-ClusterResource`, `Suspend-ClusterNode` ani operacji failover.
 
 Skrypty `XEvents` wykonują świadome zmiany polegające na utworzeniu, uruchomieniu lub zatrzymaniu sesji Extended Events.
 
