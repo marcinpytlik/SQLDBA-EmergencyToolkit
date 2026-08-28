@@ -71,7 +71,7 @@ $meta = [pscustomobject]@{
     Database             = $Database
     ToolkitRoot          = $ToolkitRoot
     PowerShell           = $PSVersionTable.PSVersion.ToString()
-    ToolkitVersion       = "0.9"
+    ToolkitVersion       = "1.0"
 }
 $meta | Export-Csv (Join-Path $incidentDir "incident-metadata.csv") -NoTypeInformation -Encoding UTF8
 
@@ -263,15 +263,27 @@ ProcDump/WPR output path:
 Additional observations:
 "@ | Out-File (Join-Path $notesDir "incident-notes.txt") -Encoding utf8
 
-$reportScript = Join-Path $ToolkitRoot "Reports\New-IncidentSummary.ps1"
-if (Test-Path $reportScript) {
+$summaryScript = Join-Path $ToolkitRoot "Reports\New-IncidentSummary.ps1"
+if (Test-Path $summaryScript) {
     try {
         Write-Host "Generating incident summary..."
-        & $reportScript -IncidentPath $incidentDir | Out-String |
+        & $summaryScript -IncidentPath $incidentDir | Out-String |
             Out-File (Join-Path $incidentDir "Incident-Report-Console.txt") -Encoding utf8
     }
     catch {
         $_ | Out-File (Join-Path $incidentDir "Incident-Report-error.txt") -Encoding utf8
+    }
+}
+
+$htmlScript = Join-Path $ToolkitRoot "Reports\New-IncidentHtmlReport.ps1"
+if (Test-Path $htmlScript) {
+    try {
+        Write-Host "Generating HTML health report..."
+        & $htmlScript -IncidentPath $incidentDir | Out-String |
+            Out-File (Join-Path $incidentDir "Incident-HtmlReport-Console.txt") -Encoding utf8
+    }
+    catch {
+        $_ | Out-File (Join-Path $incidentDir "Incident-HtmlReport-error.txt") -Encoding utf8
     }
 }
 
@@ -281,6 +293,7 @@ Write-Host "SQL target: $ServerInstance"
 Write-Host "Windows target: $osTarget ($osMode)"
 Write-Host "Storage diagnostics: $storageDir"
 Write-Host "Incident summary: $(Join-Path $incidentDir 'Incident-Summary.md')"
+Write-Host "HTML report: $(Join-Path $incidentDir 'Incident-Report.html')"
 if ($ResolveFciActiveNode) { Write-Host "FCI active-node resolution requested." }
 if ($CollectCluster) { Write-Host "Cluster snapshot requested." }
 Write-Host "Review *-error.txt files to see which collectors could not run."
