@@ -2,26 +2,18 @@
 
 Praktyczny zestaw narzędzi, skryptów i procedur dla administratora Microsoft SQL Server podczas diagnostyki awarii, problemów wydajnościowych, blokad, problemów sieciowych i operacyjnych.
 
-## Założenie
+## Wersja 1.0
 
-Repozytorium ma działać jak plecak awaryjny DBA: minimum teorii, maksimum skryptów gotowych do użycia.
+Wersja 1.0 dodaje **Health Score + HTML Report**.
 
-## Wersja 0.9
-
-Wersja 0.9 dodaje **Incident Report Generator**.
-
-Po zakończeniu collectora toolkit automatycznie analizuje zebrane pliki CSV i tworzy:
+Po zakończeniu collectora toolkit automatycznie generuje:
 
 - `Incident-Summary.md`
 - `Incident-Findings.csv`
+- `Incident-HealthScore.csv`
+- `Incident-Report.html`
 
-Wyniki są grupowane jako:
-
-- Critical
-- Warning
-- OK
-
-Raport jest heurystycznym triage i nie zastępuje pełnej analizy RCA.
+Raport HTML zawiera Health Score 0-100, status ogólny, executive summary oraz sekcje Critical / Warning / OK.
 
 ## Szybki start
 
@@ -30,7 +22,7 @@ Raport jest heurystycznym triage i nie zastępuje pełnej analizy RCA.
     -ServerInstance "SQLPROD01,1433"
 ```
 
-### FCI — automatyczne wykrycie aktywnego noda
+### FCI
 
 ```powershell
 .\PowerShell\Collect-SqlIncident.ps1 `
@@ -47,49 +39,61 @@ Raport jest heurystycznym triage i nie zastępuje pełnej analizy RCA.
     -ComputerName "SQLAG02"
 ```
 
-## Incident Report Generator
+## Health Score
 
-Generator znajduje się w:
+Model v1.0 jest celowo prosty i transparentny:
 
-```text
-Reports/New-IncidentSummary.ps1
-```
+- start: 100 punktów,
+- Critical: -20 punktów,
+- Warning: -7 punktów,
+- minimum: 0.
 
-Można go również uruchomić samodzielnie dla istniejącej paczki:
+Status:
+
+- 90-100: Healthy
+- 70-89: Degraded
+- 50-69: Warning
+- 0-49: Critical
+
+To heurystyka operacyjna, nie SLA ani automatyczne RCA.
+
+## Raporty
+
+Generator tekstowy:
 
 ```powershell
 .\Reports\New-IncidentSummary.ps1 `
     -IncidentPath ".\Incidents\Incident-20260828-120000"
 ```
 
-Analizowane są obecnie m.in.:
+Generator HTML:
 
-- blocking,
-- latency plików SQL,
-- wolne miejsce na wolumenach,
-- stan nodów klastra,
-- błędy poszczególnych collectorów.
-
-Przykładowe wyniki:
-
-```text
-Critical
-- Blocking: Detected 5 blocking rows.
-- StorageIO: High file latency 54.0 ms for D:\Data\MyDb.mdf.
-
-Warning
-- FreeSpace: D: has 16.2% free.
-- Collector: 1 collector error file was generated.
-
-OK
-- Cluster: All captured cluster nodes are Up.
+```powershell
+.\Reports\New-IncidentHtmlReport.ps1 `
+    -IncidentPath ".\Incidents\Incident-20260828-120000"
 ```
 
-Progi są celowo traktowane jako heurystyki operacyjne, a nie SLA. Na przykład latency z `sys.dm_io_virtual_file_stats` jest kumulowane od startu instancji i należy je korelować z bieżącym workloadem oraz licznikami Windows.
+Generator HTML korzysta z `Incident-Findings.csv`, dlatego przy ręcznym uruchamianiu najpierw wykonaj `New-IncidentSummary.ps1`.
+
+## Obszary diagnostyki
+
+Toolkit obejmuje:
+
+- aktywne requesty i blocking,
+- wait stats,
+- pamięć i tempdb,
+- log transakcyjny,
+- backupy i SQL Agent,
+- AG i replikację,
+- Extended Events,
+- sieć, DNS, TCP, SPN/Kerberos i TLS/pre-login,
+- Windows/OS,
+- zdalny collector hosta Windows,
+- FCI i Windows Server Failover Cluster,
+- storage, latency, autogrowth i VLF,
+- automatyczny incident summary i HTML report.
 
 ## Wynik collectora
-
-Przykładowa paczka v0.9:
 
 ```text
 Incident-YYYYMMDD-HHMMSS/
@@ -103,66 +107,36 @@ Incident-YYYYMMDD-HHMMSS/
 ├── incident-metadata.csv
 ├── Incident-Findings.csv
 ├── Incident-Summary.md
-└── Incident-Report-Console.txt
+├── Incident-HealthScore.csv
+└── Incident-Report.html
 ```
 
-## Storage & IO Emergency Pack
+## Zasady bezpieczeństwa
 
-Toolkit koreluje:
+Collectory `TSQL`, `Network`, `OS`, `Storage`, `Cluster` oraz generatory raportów są przeznaczone do diagnostyki i odczytu.
 
-- latency per plik SQL Server,
-- ustawienia autogrowth,
-- liczbę VLF,
-- IO tempdb,
-- wolne miejsce na wolumenach,
-- liczniki dysków Windows,
-- aktywny node FCI.
+Nie wykonują:
 
-Szczegółowy runbook: `Docs/Storage-IO-Emergency-Runbook.md`.
+- restartów usług,
+- failoveru,
+- shrink,
+- zmian autogrowth,
+- zmian konfiguracji storage,
+- zmian konfiguracji Windows ani firewalla.
 
-## FCI & Cluster Emergency Pack
+Skrypty w katalogu `XEvents` są wyjątkiem: świadomie tworzą, uruchamiają lub zatrzymują sesje Extended Events i nie są uruchamiane automatycznie przez główny collector.
 
-Toolkit potrafi zebrać snapshot klastra oraz opcjonalnie samodzielnie rozwiązać aktywny node FCI przez `-ResolveFciActiveNode`.
-
-Żaden skrypt cluster collectora nie wykonuje failoveru ani zmian w konfiguracji klastra.
-
-## Remote Server Collector
-
-`ServerInstance` wskazuje endpoint SQL Server, a `ComputerName` konkretny host Windows. Dla FCI pozwala to osobno wskazać VNN i fizyczny node.
-
-## Network
-
-Warstwa Network działa z hosta collectora do `ServerInstance`. Pozytywny `Test-NetConnection` potwierdza osiągalność TCP, ale nie gwarantuje poprawnego TLS/pre-login handshake ani logowania SQL Server.
-
-## Extended Events
-
-Sesje XE w katalogu `XEvents` nie są uruchamiane automatycznie. Główny collector jedynie odczytuje ich stan.
-
-## ProcDump i WPR
-
-ProcDump i WPR/WPA pozostają akcjami ręcznymi. Toolkit nie uruchamia automatycznie dumpów ani trace ETW.
-
-## Fallback
-
-Jeżeli resolver FCI, zdalny CIM, Event Log, collector klastra, storage lub generator raportu nie działa, toolkit zapisuje `*-error.txt` i kontynuuje pozostałe kroki.
+ProcDump i WPR/WPA pozostają akcjami ręcznymi.
 
 ## Wymagania
 
 Typowo potrzebne są:
 
 - `Invoke-Sqlcmd` lub `Invoke-DbaQuery`,
-- `VIEW SERVER STATE` lub odpowiednie nowsze uprawnienia SQL Server,
-- moduł `FailoverClusters` dla diagnostyki FCI,
-- uprawnienia do zdalnego CIM/Event Log,
+- odpowiednie uprawnienia diagnostyczne SQL Server,
+- moduł `FailoverClusters` dla FCI,
+- uprawnienia do zdalnego CIM/Event Log dla remote collectora,
 - poprawny DNS i firewall.
-
-## Bezpieczeństwo
-
-Collectory `TSQL`, `Network`, `OS`, `Storage`, `Cluster` oraz generator raportu są przeznaczone do odczytu.
-
-Nie wykonują shrink, zmian rozmiarów plików, restartów usług, failoveru ani zmian konfiguracji storage.
-
-Skrypty `XEvents` są wyjątkiem — świadomie tworzą, uruchamiają lub zatrzymują sesje Extended Events.
 
 ## Autor
 
