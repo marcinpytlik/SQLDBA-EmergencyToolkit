@@ -98,22 +98,19 @@ foreach ($item in $scriptMap) {
     Invoke-ToolkitQuery -Name $item.Name -Path $path -TargetDatabase $item.Database
 }
 
-try {
-    $serverPart = $ServerInstance.Split(',')[0]
-    $port = $null
-    if ($ServerInstance -match ',(?<port>\d+)$') {
-        $port = [int]$Matches.port
+$networkScript = Join-Path $ToolkitRoot "Network\Test-SqlConnectivity.ps1"
+if (Test-Path $networkScript) {
+    try {
+        Write-Host "Collecting Network diagnostics..."
+        & $networkScript -ServerInstance $ServerInstance -OutputPath $networkDir | Out-String |
+            Out-File (Join-Path $networkDir "Network-Console.txt") -Encoding utf8
     }
-
-    $tncParams = @{ ComputerName = $serverPart; InformationLevel = 'Detailed' }
-    if ($port) { $tncParams.Port = $port }
-
-    Test-NetConnection @tncParams |
-        Format-List * |
-        Out-File (Join-Path $networkDir "Test-NetConnection.txt") -Encoding utf8
+    catch {
+        $_ | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
+    }
 }
-catch {
-    $_ | Out-File (Join-Path $networkDir "Test-NetConnection-error.txt") -Encoding utf8
+else {
+    "Network collector not found: $networkScript" | Out-File (Join-Path $networkDir "Network-Collector-error.txt") -Encoding utf8
 }
 
 try {
