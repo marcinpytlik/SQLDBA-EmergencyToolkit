@@ -386,3 +386,84 @@ Raport dla istniejącej paczki:
 .\Reports\New-IncidentSummary.ps1 -IncidentPath ".\Incidents\Incident-YYYYMMDD-HHMMSS"
 .\Reports\New-IncidentHtmlReport.ps1 -IncidentPath ".\Incidents\Incident-YYYYMMDD-HHMMSS"
 ```
+
+## 17. Procmon i symbole offline dla analizy SQL Server I/O
+
+Pełny runbook znajduje się w:
+
+```text
+Docs/Procmon-SQL-IO-Runbook.md
+```
+
+Skrypt do przygotowania symboli offline:
+
+```text
+PowerShell/Prepare-OfflineSymbols.ps1
+```
+
+### Serwer SQL bez Internetu
+
+Najpierw znajdź katalog BINN:
+
+```powershell
+Get-Process sqlservr | Select-Object -ExpandProperty Path
+```
+
+Następnie zbierz dokładne wersje binariów Windows, sterowników i SQL Server:
+
+```powershell
+.\PowerShell\Prepare-OfflineSymbols.ps1 `
+    -Mode CollectTargets `
+    -WorkingDirectory C:\SQLSymbols `
+    -SqlBinnPath "C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Binn"
+```
+
+### Komputer z Internetem
+
+Po skopiowaniu katalogu `C:\SQLSymbols` na komputer z dostępem do Internetu uruchom:
+
+```powershell
+.\PowerShell\Prepare-OfflineSymbols.ps1 `
+    -Mode DownloadSymbols `
+    -WorkingDirectory C:\SQLSymbols
+```
+
+Wymagany jest `symchk.exe` z Debugging Tools for Windows.
+
+Powstały cache:
+
+```text
+C:\SQLSymbols\Symbols
+```
+
+skopiuj z powrotem na serwer SQL i wskaż w Procmon:
+
+```text
+Options -> Configure Symbols...
+```
+
+np.:
+
+```text
+D:\DBATools\Symbols
+```
+
+### Minimalny filtr Procmon
+
+```text
+Process Name is sqlservr.exe
+AND
+Path begins with D:\SQLData\
+```
+
+Do bardzo krótkiego testu najlepiej użyć konkretnego pliku:
+
+```text
+Process Name is sqlservr.exe
+AND
+Path is D:\SQLData\ProblemDatabase.mdf
+```
+
+Następnie kliknij zdarzenie `WriteFile`, otwórz `Event Properties` i przejdź do zakładki `Stack`.
+
+Szczegóły testów INSERT / COMMIT / CHECKPOINT / MDF / LDF oraz interpretacja stacku są opisane w `Docs/Procmon-SQL-IO-Runbook.md`.
