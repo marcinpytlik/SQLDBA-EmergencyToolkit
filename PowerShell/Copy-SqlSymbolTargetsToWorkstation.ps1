@@ -1,24 +1,24 @@
 <#
 .SYNOPSIS
-    Copies binaries required for preparing an offline symbol cache for
-    SQL Server / Procmon analysis from a production SQL Server host
-    to a transfer location on a DBA workstation.
+    Copies binaries required for an offline Procmon symbol cache from a SQL Server
+    host to the standard C:\SQLSymbols\Targets\<SERVER> structure on a DBA workstation.
 
 .DESCRIPTION
-    The script:
-      - collects selected Windows user-mode binaries,
-      - collects kernel and storage/file-system drivers,
-      - detects running sqlservr.exe processes and copies selected SQL Server binaries,
-      - preserves files in separate Windows / Drivers / SQLServer folders,
-      - writes an inventory with file versions, source paths and SHA256 hashes,
-      - does NOT modify SQL Server, Windows configuration, services or registry.
+    Run this script on the SQL Server host. DestinationPath should normally point to
+    the Targets folder exposed from the DBA workstation, for example:
 
-    Recommended usage:
-      Run on the SQL Server as an account that can read the files and write
-      to the destination share.
+        \\DBAWORKSTATION\SQLSymbols$\Targets
 
-    Example destination:
-      \\DBAWORKSTATION\SQLSymbols$\Targets-SQLPROD01
+    The script creates:
+
+        <DestinationPath>\<COMPUTERNAME>\Windows
+        <DestinationPath>\<COMPUTERNAME>\Drivers
+        <DestinationPath>\<COMPUTERNAME>\SQLServer\Instance-N
+        <DestinationPath>\<COMPUTERNAME>\Logs
+        <DestinationPath>\<COMPUTERNAME>\SymbolTargets.csv
+        <DestinationPath>\<COMPUTERNAME>\CopySummary.csv
+
+    It does not modify SQL Server, Windows configuration, services or registry.
 
 .NOTES
     Compatible with Windows PowerShell 5.1 and PowerShell 7+.
@@ -42,20 +42,9 @@ param
 
 $ErrorActionPreference = 'Stop'
 
-function Write-Info {
-    param([string]$Message)
-    Write-Host "[INFO] $Message"
-}
-
-function Write-Ok {
-    param([string]$Message)
-    Write-Host "[ OK ] $Message"
-}
-
-function Write-Warn {
-    param([string]$Message)
-    Write-Warning $Message
-}
+function Write-Info { param([string]$Message) Write-Host "[INFO] $Message" }
+function Write-Ok   { param([string]$Message) Write-Host "[ OK ] $Message" }
+function Write-Warn { param([string]$Message) Write-Warning $Message }
 
 function Ensure-Directory {
     param([string]$Path)
@@ -90,14 +79,9 @@ function Get-FileInventoryRecord {
 
 function Copy-SymbolTarget {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourcePath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$DestinationDirectory,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Category
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory,
+        [Parameter(Mandatory = $true)][string]$Category
     )
 
     if (-not (Test-Path -LiteralPath $SourcePath)) {
@@ -106,17 +90,12 @@ function Copy-SymbolTarget {
     }
 
     Ensure-Directory -Path $DestinationDirectory
-
     $destinationFile = Join-Path $DestinationDirectory (Split-Path $SourcePath -Leaf)
 
     try {
         Copy-Item -LiteralPath $SourcePath -Destination $destinationFile -Force:$Force -ErrorAction Stop
-        $script:Inventory += Get-FileInventoryRecord `
-            -SourcePath $SourcePath `
-            -DestinationFile $destinationFile `
-            -Category $Category
-
-        Write-Ok "$SourcePath"
+        $script:Inventory += Get-FileInventoryRecord -SourcePath $SourcePath -DestinationFile $destinationFile -Category $Category
+        Write-Ok $SourcePath
     }
     catch {
         Write-Warn ("Copy failed: {0}`n{1}" -f $SourcePath, $_.Exception.Message)
@@ -132,9 +111,7 @@ function Get-RunningSqlServerBinnPaths {
     $paths = @()
 
     try {
-        $processes = Get-CimInstance Win32_Process `
-            -Filter "Name='sqlservr.exe'" `
-            -ErrorAction Stop
+        $processes = Get-CimInstance Win32_Process -Filter "Name='sqlservr.exe'" -ErrorAction Stop
     }
     catch {
         Write-Warn "Could not query running sqlservr.exe processes: $($_.Exception.Message)"
@@ -145,9 +122,7 @@ function Get-RunningSqlServerBinnPaths {
         $exePath = $process.ExecutablePath
 
         if ([string]::IsNullOrWhiteSpace($exePath)) {
-            try {
-                $exePath = (Get-Process -Id $process.ProcessId -ErrorAction Stop).Path
-            }
+            try { $exePath = (Get-Process -Id $process.ProcessId -ErrorAction Stop).Path }
             catch {
                 Write-Warn "Could not resolve sqlservr.exe path for PID $($process.ProcessId)."
                 continue
@@ -156,26 +131,22 @@ function Get-RunningSqlServerBinnPaths {
 
         if (-not [string]::IsNullOrWhiteSpace($exePath)) {
             $binn = Split-Path -Parent $exePath
-            if ($paths -notcontains $binn) {
-                $paths += $binn
-            }
+            if ($paths -notcontains $binn) { $paths += $binn }
         }
     }
 
     return $paths
 }
 
-$serverRoot = Join-Path $DestinationPath $env:COMPUTERNAME
+$serverRoot    = Join-Path $DestinationPath $env:COMPUTERNAME
 $windowsTarget = Join-Path $serverRoot 'Windows'
 $driversTarget = Join-Path $serverRoot 'Drivers'
 $sqlRoot       = Join-Path $serverRoot 'SQLServer'
 $logsTarget    = Join-Path $serverRoot 'Logs'
 
-Ensure-Directory -Path $serverRoot
-Ensure-Directory -Path $windowsTarget
-Ensure-Directory -Path $driversTarget
-Ensure-Directory -Path $sqlRoot
-Ensure-Directory -Path $logsTarget
+foreach ($dir in @($serverRoot,$windowsTarget,$driversTarget,$sqlRoot,$logsTarget)) {
+    Ensure-Directory -Path $dir
+}
 
 $Inventory = @()
 $Errors    = @()
@@ -186,10 +157,10 @@ Write-Host " SQL Server / Procmon Offline Symbol Target Collector"
 Write-Host "=========================================================="
 Write-Host ""
 Write-Info "Source server : $env:COMPUTERNAME"
-Write-Info "Destination   : $serverRoot"
+Write-Info "Targets root  : $DestinationPath"
+Write-Info "Server folder : $serverRoot"
 Write-Host ""
 
-# Core Windows user-mode binaries that commonly appear in file I/O stacks.
 $windowsFiles = @(
     'ntdll.dll',
     'kernel32.dll',
@@ -199,19 +170,11 @@ $windowsFiles = @(
 )
 
 foreach ($file in $windowsFiles) {
-    Copy-SymbolTarget `
-        -SourcePath (Join-Path $env:SystemRoot "System32\$file") `
-        -DestinationDirectory $windowsTarget `
-        -Category 'Windows'
+    Copy-SymbolTarget -SourcePath (Join-Path $env:SystemRoot "System32\$file") -DestinationDirectory $windowsTarget -Category 'Windows'
 }
 
-# Windows kernel.
-Copy-SymbolTarget `
-    -SourcePath (Join-Path $env:SystemRoot 'System32\ntoskrnl.exe') `
-    -DestinationDirectory $windowsTarget `
-    -Category 'WindowsKernel'
+Copy-SymbolTarget -SourcePath (Join-Path $env:SystemRoot 'System32\ntoskrnl.exe') -DestinationDirectory $windowsTarget -Category 'WindowsKernel'
 
-# Core file-system and storage drivers.
 $driverFiles = @(
     'ntfs.sys',
     'fltmgr.sys',
@@ -233,42 +196,30 @@ if ($IncludeOptionalDrivers) {
 }
 
 foreach ($file in ($driverFiles | Select-Object -Unique)) {
-    Copy-SymbolTarget `
-        -SourcePath (Join-Path $env:SystemRoot "System32\drivers\$file") `
-        -DestinationDirectory $driversTarget `
-        -Category 'Driver'
+    Copy-SymbolTarget -SourcePath (Join-Path $env:SystemRoot "System32\drivers\$file") -DestinationDirectory $driversTarget -Category 'Driver'
 }
 
-# Detect all currently running SQL Server Engine binaries.
 $sqlBinnPaths = @(Get-RunningSqlServerBinnPaths)
 
 if ($sqlBinnPaths.Count -eq 0) {
-    Write-Warn "No running sqlservr.exe instance was detected."
+    Write-Warn 'No running sqlservr.exe instance was detected.'
 }
 else {
-    Write-Info "Detected SQL Server BINN directories:"
-    foreach ($binn in $sqlBinnPaths) {
-        Write-Host "       $binn"
-    }
+    Write-Info 'Detected SQL Server BINN directories:'
+    foreach ($binn in $sqlBinnPaths) { Write-Host "       $binn" }
 
     $instanceNo = 0
-
     foreach ($binn in $sqlBinnPaths) {
         $instanceNo++
-
         $sqlTarget = Join-Path $sqlRoot ("Instance-{0}" -f $instanceNo)
         Ensure-Directory -Path $sqlTarget
 
         if ($IncludeAllSqlBinnFiles) {
             Write-Info "Copying all EXE/DLL files from: $binn"
-
             Get-ChildItem -LiteralPath $binn -File -ErrorAction SilentlyContinue |
                 Where-Object { $_.Extension -in '.exe', '.dll' } |
                 ForEach-Object {
-                    Copy-SymbolTarget `
-                        -SourcePath $_.FullName `
-                        -DestinationDirectory $sqlTarget `
-                        -Category ("SQLServer-Instance-{0}" -f $instanceNo)
+                    Copy-SymbolTarget -SourcePath $_.FullName -DestinationDirectory $sqlTarget -Category ("SQLServer-Instance-{0}" -f $instanceNo)
                 }
         }
         else {
@@ -282,57 +233,36 @@ else {
             )
 
             foreach ($file in $sqlFiles) {
-                Copy-SymbolTarget `
-                    -SourcePath (Join-Path $binn $file) `
-                    -DestinationDirectory $sqlTarget `
-                    -Category ("SQLServer-Instance-{0}" -f $instanceNo)
+                Copy-SymbolTarget -SourcePath (Join-Path $binn $file) -DestinationDirectory $sqlTarget -Category ("SQLServer-Instance-{0}" -f $instanceNo)
             }
         }
 
         [pscustomobject]@{
             InstanceNumber = $instanceNo
             BinnPath       = $binn
-        } |
-        Export-Csv `
-            -Path (Join-Path $sqlTarget 'SqlBinnPath.csv') `
-            -NoTypeInformation `
-            -Encoding UTF8
+        } | Export-Csv -Path (Join-Path $sqlTarget 'SqlBinnPath.csv') -NoTypeInformation -Encoding UTF8
     }
 }
 
 $inventoryPath = Join-Path $serverRoot 'SymbolTargets.csv'
-$Inventory |
-    Sort-Object Category, FileName |
-    Export-Csv `
-        -Path $inventoryPath `
-        -NoTypeInformation `
-        -Encoding UTF8
+$Inventory | Sort-Object Category, FileName | Export-Csv -Path $inventoryPath -NoTypeInformation -Encoding UTF8
 
 $errorPath = Join-Path $logsTarget 'CopyErrors.csv'
 if ($Errors.Count -gt 0) {
-    $Errors |
-        Export-Csv `
-            -Path $errorPath `
-            -NoTypeInformation `
-            -Encoding UTF8
+    $Errors | Export-Csv -Path $errorPath -NoTypeInformation -Encoding UTF8
 }
 
-$summary = [pscustomobject]@{
-    SourceComputer         = $env:COMPUTERNAME
-    DestinationRoot        = $serverRoot
-    FilesCopied            = $Inventory.Count
-    Errors                 = $Errors.Count
-    SqlBinnDirectories     = $sqlBinnPaths.Count
-    IncludeOptionalDrivers = [bool]$IncludeOptionalDrivers
-    IncludeAllSqlBinnFiles = [bool]$IncludeAllSqlBinnFiles
-    CompletedAt            = Get-Date
-}
-
-$summary |
-    Export-Csv `
-        -Path (Join-Path $serverRoot 'CopySummary.csv') `
-        -NoTypeInformation `
-        -Encoding UTF8
+[pscustomobject]@{
+    SourceComputer           = $env:COMPUTERNAME
+    TargetsRoot              = $DestinationPath
+    ServerRoot               = $serverRoot
+    FilesCopied              = $Inventory.Count
+    Errors                   = $Errors.Count
+    SqlBinnDirectories       = $sqlBinnPaths.Count
+    IncludeOptionalDrivers   = [bool]$IncludeOptionalDrivers
+    IncludeAllSqlBinnFiles   = [bool]$IncludeAllSqlBinnFiles
+    CompletedAt              = Get-Date
+} | Export-Csv -Path (Join-Path $serverRoot 'CopySummary.csv') -NoTypeInformation -Encoding UTF8
 
 Write-Host ""
 Write-Host "=========================================================="
@@ -341,22 +271,13 @@ Write-Host "=========================================================="
 Write-Host ""
 Write-Host "Copied files : $($Inventory.Count)"
 Write-Host "Errors       : $($Errors.Count)"
+Write-Host "Server folder: $serverRoot"
+Write-Host "Inventory    : $inventoryPath"
 Write-Host ""
-Write-Host "Destination:"
-Write-Host "    $serverRoot"
-Write-Host ""
-Write-Host "Inventory:"
-Write-Host "    $inventoryPath"
-Write-Host ""
-
-if ($Errors.Count -gt 0) {
-    Write-Host "Errors:"
-    Write-Host "    $errorPath"
-    Write-Host ""
-}
-
 Write-Host "Next step on the Internet-connected workstation:"
 Write-Host ""
-Write-Host "    .\Prepare-OfflineSymbols.ps1 -Mode DownloadSymbols -WorkingDirectory `"<path containing Targets>`""
+Write-Host '    .\PowerShell\Prepare-OfflineSymbols.ps1 -Mode DownloadSymbols -WorkingDirectory "C:\SQLSymbols"'
 Write-Host ""
-Write-Host "This script does not stop services or change SQL Server / Windows configuration."
+Write-Host 'The downloader will recursively scan C:\SQLSymbols\Targets, including all server subfolders.'
+Write-Host ""
+Write-Host 'This script does not stop services or change SQL Server / Windows configuration.'
