@@ -490,8 +490,8 @@ SELECT
 FROM sys.dm_db_page_info
 (
     DB_ID(),
-    1,      -- file_id
-    488,    -- page_id
+    1,
+    488,
     'DETAILED'
 );
 ```
@@ -611,9 +611,9 @@ GO
 DBCC PAGE
 (
     'DemoDeploymentDatabase',
-    1,      -- FileID
-    488,    -- PageID
-    3       -- poziom szczegółowości
+    1,
+    488,
+    3
 );
 GO
 ```
@@ -699,3 +699,236 @@ konkretna tabela / indeks
       v
 Procmon Stack -> SQL Server -> Windows I/O -> kernel/storage
 ```
+
+## 22. Case study: CHECKPOINT -> dirty page -> dbo.NewTable2 -> WriteFile
+
+Poniższy przykład pochodzi z praktycznego testu wykonanego dla bazy `DemoDeploymentDatabase`.
+
+### 22.1. Identyfikacja tabeli i indeksu
+
+Najpierw sprawdzono `object_id` oraz indeks tabeli:
+
+```sql
+USE DemoDeploymentDatabase;
+GO
+
+SELECT
+    o.object_id,
+    o.name AS ObjectName,
+    i.index_id,
+    i.name AS IndexName,
+    i.type_desc
+FROM sys.objects AS o
+JOIN sys.indexes AS i
+    ON i.object_id = o.object_id
+WHERE o.name = N'NewTable2';
+```
+
+Wynik testu:
+
+```text
+object_id   = 1205579333
+ObjectName  = NewTable2
+index_id    = 1
+IndexName   = PK_NewTable1
+type_desc   = CLUSTERED
+```
+
+### 22.2. Identyfikacja stron należących do tabeli
+
+Do sprawdzenia stron użyto:
+
+```sql
+SELECT
+    allocated_page_file_id AS file_id,
+    allocated_page_page_id AS page_id,
+    page_type_desc,
+    allocation_unit_type_desc,
+    is_allocated
+FROM sys.dm_db_database_page_allocations
+(
+    DB_ID(),
+    OBJECT_ID(N'dbo.NewTable2'),
+    1,
+    NULL,
+    'DETAILED'
+)
+WHERE is_allocated = 1
+ORDER BY allocated_page_file_id, allocated_page_page_id;
+```
+
+Wynik:
+
+```text
+file_id  page_id  page_type_desc  allocation_unit_type_desc
+1        460      IAM_PAGE        IN_ROW_DATA
+1        512      DATA_PAGE       IN_ROW_DATA
+```
+
+Interesująca nas strona danych to więc:
+
+```text
+FileID:PageID = 1:512
+```
+
+### 22.3. Wyliczenie offsetu strony 512
+
+Dla strony 8 KB:
+
+```text
+Offset = PageID * 8192
+```
+
+czyli:
+
+```text
+512 * 8192 = 4 194 304
+```
+
+W Procmonie należało więc szukać operacji obejmującej offset `4 194 304` w pliku MDF.
+
+### 22.4. Złapany WriteFile
+
+W capture znaleziono dokładnie:
+
+```text
+Process   : sqlservr.exe
+Operation : WriteFile
+Path      : ...\DemoDeploymentDatabase.mdf
+Result    : SUCCESS
+Offset    : 4 194 304
+Length    : 8 192
+I/O Flags : Non-cached, Write Through
+```
+
+Interpretacja:
+
+```text
+StartPage = 4 194 304 / 8192 = 512
+PageCount = 8 192 / 8192     = 1
+```
+
+Czyli ten pojedynczy `WriteFile` zapisał dokładnie jedną stronę:
+
+```text
+1:512
+```
+
+która wcześniej została przypisana do:
+
+```text
+dbo.NewTable2
+PK_NewTable1
+DATA_PAGE
+```
+
+### 22.5. Wymuszenie flush przez CHECKPOINT
+
+Przed capture wykonano modyfikację danych, a następnie ręczny:
+
+```sql
+CHECKPOINT;
+GO
+```
+
+W stacku zdarzenia `WriteFile` dla strony `1:512` pojawiła się funkcja:
+
+```text
+UserCheckpoint
+```
+
+co bezpośrednio wiąże fizyczny zapis z ręcznie wywołanym checkpointem.
+
+### 22.6. Stack strony 1:512
+
+Najważniejszy fragment stosu wyglądał następująco:
+
+```text
+sqlmin.dll!UserCheckpoint
+        ↓
+sqlmin.dll!BPool::WriteOnlyDirty
+        ↓
+sqlmin.dll!FCB::GatherWriteInternal
+        ↓
+sqlmin.dll!FCB::AsyncWrite
+        ↓
+sqlmin.dll!FCB::AsyncWriteInternal
+        ↓
+sqlmin.dll!DiskWriteAsync
+        ↓
+KERNELBASE.dll!WriteFile
+        ↓
+ntdll.dll!ZwWriteFile
+        ↓
+ntoskrnl.exe!NtWriteFile
+        ↓
+ntoskrnl.exe!IofCallDriver
+        ↓
+FLTMGR.SYS
+```
+
+Nazwy funkcji mogą różnić się pomiędzy buildami SQL Server i Windows, ale idea pozostaje ta sama.
+
+### 22.7. Co pokazuje ten test
+
+Ten przykład pozwolił prześledzić pełny łańcuch:
+
+```text
+T-SQL CHECKPOINT
+       ↓
+UserCheckpoint
+       ↓
+Buffer Pool
+       ↓
+BPool::WriteOnlyDirty
+       ↓
+FCB::GatherWriteInternal
+       ↓
+DiskWriteAsync
+       ↓
+Windows WriteFile
+       ↓
+Kernel / Filter Manager
+```
+
+Jednocześnie dzięki korelacji `Offset -> PageID` wiadomo, że fizycznie zapisywana była konkretna strona:
+
+```text
+1:512
+```
+
+należąca do:
+
+```text
+dbo.NewTable2
+clustered index PK_NewTable1
+```
+
+Pełna korelacja wygląda więc tak:
+
+```text
+dbo.NewTable2
+object_id 1205579333
+index_id 1 / PK_NewTable1
+       ↓
+DATA_PAGE 1:512
+       ↓
+Offset 4 194 304
+Length 8 192
+       ↓
+Procmon WriteFile
+       ↓
+UserCheckpoint
+       ↓
+BPool::WriteOnlyDirty
+       ↓
+FCB::GatherWriteInternal
+       ↓
+DiskWriteAsync
+       ↓
+WriteFile / ZwWriteFile / NtWriteFile
+       ↓
+Windows kernel / FLTMGR.SYS
+```
+
+To jest praktyczny sposób przejścia od konkretnej tabeli SQL Server aż do rzeczywistej operacji I/O widocznej na poziomie Windows.
